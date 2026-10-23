@@ -1,0 +1,18 @@
+{
+  "name": "cortex",
+  "private": true,
+  "version": "0.1.0",
+  "description": "A new folder for a new agent. Keys and chats stay behind.",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "test": "node scripts/selftest.mjs",
+    "build": "vite build"
+  },
+  "dependencies": {
+    "three": "^0.170.0"
+  },
+  "devDependencies": {
+    "vite": "^6.3.5"
+  }
+}

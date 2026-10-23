@@ -1,0 +1,98 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Cortex</title>
+    <link rel="stylesheet" href="/src/style.css" />
+  </head>
+  <body>
+    <div id="view"></div>
+    <div id="chrome" aria-hidden="true"></div>
+    <header id="brand" class="panel">
+      <h1>CORTEX</h1>
+      <div id="first-move">
+      <p id="product-line">You get a new folder that a new agent opens. Keys and chats stay in the original folder. Nothing starts itself.</p>
+      <div id="open-row" class="row">
+        <input id="home-path" type="text" placeholder="Paste the original folder" />
+        <button id="browse-home" type="button">Browse</button>
+      </div>
+      <p id="source-line"></p>
+      <section class="fn">
+        <p><strong>Build.</strong> Copies skills and rules into a pack on this PC. The original folder is not changed.</p>
+        <button id="build-pack" type="button">Build</button>
+        <details id="hold-more">
+          <summary>Hold a skill back, or leave memory behind</summary>
+          <label class="hold-label"><input id="rules-only" type="checkbox" /> Rules only. Memory stays in the original folder.</label>
+          <textarea id="hold-titles" rows="2" spellcheck="false" placeholder="Hold these skill titles back, one per line"></textarea>
+        </details>
+      </section>
+      <section class="fn">
+        <p><strong>Birth.</strong> Writes that pack into a new folder. Nothing starts. Do not paste the new folder into the agent already open. If the original folder changed after Build, Birth refuses and names the files.</p>
+        <button id="birth-pack" class="warn" type="button">Birth</button>
+        <p class="aside-note">Check, Compare, and Place are one scroll down. They do not start an agent.</p>
+      </section>
+      <div id="receipt" hidden aria-live="polite"></div>
+      </div>
+      <div id="more-move">
+      <section class="fn">
+        <p><strong>Check.</strong> Check only reads, and it does not stop a skill. A file name that looks like a secret is shown as hidden-path. With the box empty it compares the last birth to the agent that made it.</p>
+        <button id="check-pack" type="button">Check</button>
+      </section>
+      <section class="fn">
+        <p><strong>Compare.</strong> Paste two birth folders, one path on each line. It does not merge them, does not copy skill text, and does not start either agent.</p>
+        <textarea id="kin-paths" rows="2" spellcheck="false" placeholder="First birth folder&#10;Second birth folder"></textarea>
+        <button id="kin-pack" type="button">Compare</button>
+        <p id="kin-plain" class="aside-note">Same, split, or only on one side. Skill text stays in the birth folders.</p>
+      </section>
+      <section class="fn">
+        <p><strong>Place.</strong> The same path box, for an empty folder you already have. The first press shows the list and writes nothing. The second press writes. A live agent is refused, and so is a folder inside a live agent or next to one.</p>
+        <button id="place-pack" type="button">Place</button>
+      </section>
+      </div>
+      <p class="aside-note">The next buttons only redraw the Hermes picture. They do not move files.</p>
+      <p id="picture-line" class="aside-note"></p>
+      <div class="row">
+        <button id="scan-home" type="button" title="Draw a Hermes folder. This does not build a pack.">Scan</button>
+        <button id="update-brain" type="button" title="Read Hermes on the server and redraw the picture. Her files stay as they are.">Update picture</button>
+        <select id="source" hidden></select>
+        <button id="open-home" type="button" title="Show or hide the path box.">Folder</button>
+      </div>
+      <input id="search" type="search" placeholder="Search the picture" />
+      <nav id="lobes"></nav>
+    </header>
+    <aside id="inspector" class="panel">
+      <div class="row">
+        <h2 id="insp-name">Neuron</h2>
+      </div>
+      <p id="insp-meta" class="meta"></p>
+      <p id="insp-path" class="meta"></p>
+      <textarea id="insp-body" spellcheck="false"></textarea>
+      <p id="status"></p>
+      <div class="row">
+        <button id="save" class="warn" type="button">Stage change</button>
+        <button id="clear-draft" type="button">Clear draft</button>
+        <button id="quarantine" class="danger" type="button">Stage delete</button>
+        <button id="restore" type="button">Put back</button>
+        <button id="close" type="button">Close</button>
+      </div>
+    </aside>
+    <footer id="toolbar" class="panel">
+      <label>Pull apart <input id="pull" type="range" min="0" max="1" step="0.01" value="0" /></label>
+      <button id="fly" type="button">Fly</button>
+      <span id="counts" class="meta"></span>
+      <span id="hint" class="meta">Picture only. Drag to turn.</span>
+    </footer>
+    <div id="picture-key" aria-hidden="true">
+      <span class="chip chip-skills">skills</span>
+      <span class="chip chip-memory">memory</span>
+      <span class="chip chip-jobs">jobs</span>
+    </div>
+    <div id="tooltip"></div>
+    <div id="empty" class="panel">
+      <p>No Hermes picture yet. The move still works. Paste the original folder on the left, then press Build.</p>
+    </div>
+    <div id="selftest" hidden></div>
+    <script type="module" src="/src/main.js"></script>
+  </body>
+</html>
