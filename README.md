@@ -8,7 +8,7 @@ Hermes, Claude, Cursor, and Codex each keep their own file names. The new agent 
 
 $0.99 once.
 
-Pay with PayPal:
+[Pay $0.99 with PayPal](https://www.paypal.me/RLC007/0.99USD)
 
 ## What you need
 
