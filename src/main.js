@@ -133,6 +133,10 @@ const buildPackButton = document.querySelector('#build-pack')
 const rulesOnlyBox = document.querySelector('#rules-only')
 const holdTitles = document.querySelector('#hold-titles')
 const birthPackButton = document.querySelector('#birth-pack')
+const growthPath = document.querySelector('#growth-path')
+const downloadBrainButton = document.querySelector('#download-brain')
+const growthRefreshButton = document.querySelector('#growth-refresh')
+const growthInbox = document.querySelector('#growth-inbox')
 const placePackButton = document.querySelector('#place-pack')
 const checkPackButton = document.querySelector('#check-pack')
 const kinPackButton = document.querySelector('#kin-pack')
@@ -1788,6 +1792,7 @@ birthPackButton.addEventListener('click', async () => {
     }
     const bornLine = typeof data.line === 'string' ? data.line.trim() : ''
     sourceLine.textContent = bornLine || 'Born.'
+    if (growthPath && data.dest) growthPath.value = data.dest
     renderMoveReceipt(`Born at ${shownPath(data.dest) || 'the new folder'}.`, data)
     renderHandoff(data.dest, data.note, data.home || previewData.home, previewData)
   } catch (error) {
@@ -1796,6 +1801,113 @@ birthPackButton.addEventListener('click', async () => {
     birthPackButton.disabled = false
   }
 })
+
+function growthFolder() {
+  return growthPath ? growthPath.value.trim() : ''
+}
+
+async function refreshGrowthInbox() {
+  if (!growthInbox) return
+  const folder = growthFolder()
+  growthInbox.replaceChildren()
+  if (!folder) {
+    const empty = document.createElement('p')
+    empty.className = 'aside-note'
+    empty.textContent = 'Paste the new folder from Birth, then press Show notes.'
+    growthInbox.append(empty)
+    return
+  }
+  try {
+    const response = await fetch(`/api/shared-brain/notes?path=${encodeURIComponent(folder)}`, { cache: 'no-store' })
+    const data = await response.json()
+    if (!response.ok) throw new Error(data.error || 'Those notes did not open.')
+    const notes = Array.isArray(data.notes) ? data.notes : []
+    if (!notes.length) {
+      const empty = document.createElement('p')
+      empty.className = 'aside-note'
+      empty.textContent = 'No notes waiting. Another AI writes one file in growth/pending/.'
+      growthInbox.append(empty)
+      return
+    }
+    for (const item of notes) {
+      const row = document.createElement('p')
+      row.className = 'aside-note'
+      const text = document.createElement('span')
+      text.textContent = `${item.from || 'ai'}: ${item.text}`
+      const accept = document.createElement('button')
+      accept.type = 'button'
+      accept.textContent = 'Accept'
+      accept.addEventListener('click', () => decideGrowth(item.id, 'accept'))
+      const reject = document.createElement('button')
+      reject.type = 'button'
+      reject.textContent = 'Reject'
+      reject.addEventListener('click', () => decideGrowth(item.id, 'reject'))
+      row.append(text, document.createTextNode(' '), accept, document.createTextNode(' '), reject)
+      growthInbox.append(row)
+    }
+  } catch (error) {
+    const line = document.createElement('p')
+    line.className = 'aside-note'
+    line.textContent = error.message || 'Those notes did not open.'
+    growthInbox.append(line)
+  }
+}
+
+async function decideGrowth(id, action) {
+  const folder = growthFolder()
+  if (!folder || !id) return
+  const response = await fetch(`/api/shared-brain/${action}`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ path: folder, id }),
+  })
+  const data = await response.json().catch(() => ({}))
+  if (!response.ok) sourceLine.textContent = data.error || 'That note did not move.'
+  else sourceLine.textContent = action === 'accept'
+    ? 'Accepted into this folder. The original AI is not changed.'
+    : 'Rejected. The note is closed.'
+  await refreshGrowthInbox()
+}
+
+if (downloadBrainButton) {
+  downloadBrainButton.addEventListener('click', async () => {
+    const folder = growthFolder()
+    if (!folder) {
+      sourceLine.textContent = 'Paste the new folder from Birth.'
+      if (growthPath) growthPath.focus()
+      return
+    }
+    downloadBrainButton.disabled = true
+    sourceLine.textContent = 'Packing the downloaded brain.'
+    try {
+      const response = await fetch(`/api/shared-brain/download?path=${encodeURIComponent(folder)}`)
+      if (!response.ok) {
+        const data = await response.json().catch(() => ({}))
+        throw new Error(data.error || 'The download did not start.')
+      }
+      const blob = await response.blob()
+      const link = document.createElement('a')
+      const url = URL.createObjectURL(blob)
+      link.href = url
+      link.download = 'cortex-brain.zip'
+      document.body.append(link)
+      link.click()
+      link.remove()
+      URL.revokeObjectURL(url)
+      sourceLine.textContent = 'Saved cortex-brain.zip. Point another AI at the folder.'
+    } catch (error) {
+      sourceLine.textContent = error.message || 'The download did not start.'
+    } finally {
+      downloadBrainButton.disabled = false
+    }
+  })
+}
+
+if (growthRefreshButton) {
+  growthRefreshButton.addEventListener('click', () => {
+    refreshGrowthInbox()
+  })
+}
 
 homePath.addEventListener('input', () => {
   placeArmed = ''

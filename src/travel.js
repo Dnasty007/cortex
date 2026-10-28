@@ -236,8 +236,17 @@ function virtualLesson(neurons, id) {
   return profileNeurons(neurons, bot).find((item) => item.id === id) || null
 }
 
+function isJobsDoorSkill(neuron) {
+  const name = String(neuron?.name || '')
+  const rel = String(neuron?.path || '').replace(/\\/g, '/')
+  return name === 'grok-bot-browser-jobs' || rel.includes('/grok-bot-browser-jobs/') || rel.startsWith('grok-bot-browser-jobs/')
+}
+
 function skillInBook(neuron, bot, neurons) {
-  if (bot === 'grok-bot') return neuron?.id === 'soul:main' || isClickerSkill(neuron)
+  if (bot === 'grok-bot') {
+    if (isJobsDoorSkill(neuron)) return false
+    return neuron?.id === 'soul:main' || isClickerSkill(neuron)
+  }
   const names = NAME_BOOKS[bot] || []
   if (neuron?.kind !== 'skill' || !namedSkill(neuron, names)) return false
   if (String(neuron.id || '').startsWith('skill:profile-pack/')) {

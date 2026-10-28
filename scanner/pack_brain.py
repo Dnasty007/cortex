@@ -30,7 +30,7 @@ SKIP_NAME = re.compile(r"(?i)(auth\.json|\.env$|credential|google_token|client_s
 FORMAT = "cortex-pack-2"
 MAX_BYTES = 1_500_000
 MEMORY_FILES = ("memories/USER.md", "memories/MEMORY.md", "SOUL.md")
-GENERATED = {"BIRTH.md", "START.md", "ASK.md", "ASK.json", "STOP.json"}
+GENERATED = {"BIRTH.md", "START.md", "GROW.md", "ASK.md", "ASK.json", "STOP.json"}
 REQUIRED = {"BIRTH.md"}
 GROWTH_ROOT = "growth"
 SECRET_MARKS = {
@@ -91,6 +91,18 @@ def start_text(kind: str) -> str:
         "The soul is SOUL.md. Memory is memories/USER.md and memories/MEMORY.md. Each skill is only its SKILL.md.\n"
         "STOP.json does not stop a send, a push, or a delete. Nothing starts itself.\n"
     )
+
+
+GROW = """This folder is a downloaded brain.
+
+Point another AI at this folder. It reads this file, then START.md, then STOP.json, then BIRTH.md, then the soul, the memory, and the skills.
+The soul is SOUL.md. Memory is memories/USER.md and memories/MEMORY.md. Each skill is only its SKILL.md.
+Keys, chats, and jobs stayed in the original folder. Do not copy this folder onto an AI that is already running. Nothing starts itself.
+
+To grow, write one note as a new file in growth/pending/. One note per file. The person accepts or rejects it in Cortex.
+An accepted note is kept in growth/accepted/. Read those after memory. A rejected note is closed. You cannot accept your own note.
+Do not edit memories/MEMORY.md. Do not start a job. If a task needs a file that is not here, stop and ask.
+"""
 
 
 GATE_REL = {
@@ -859,6 +871,16 @@ def build_pack(home: Path, out: Path, label: str, rules_only: bool = False, hold
             "sha256": byte_hash(start_bytes),
             "redactions": 0,
         })
+        if residue(GROW):
+            raise PackError("GROW.md still matches the secret pattern.")
+        write_file(out, Path("GROW.md"), GROW)
+        grow_bytes = GROW.encode("utf-8")
+        files.insert(3, {
+            "path": "GROW.md",
+            "bytes": len(grow_bytes),
+            "sha256": byte_hash(grow_bytes),
+            "redactions": 0,
+        })
         stop = stop_card(kind, holes, left_behind, rules_only, held_shown, scheduled)
         write_file(out, Path("STOP.json"), stop)
         stop_bytes = stop.encode("utf-8")
@@ -926,7 +948,7 @@ def allowed_install_rel(rel: str) -> bool:
     if not safe_rel(path):
         return False
     text = path.as_posix()
-    if text in ("memories/USER.md", "memories/MEMORY.md", "SOUL.md", "BIRTH.md", "START.md", "ASK.md", "ASK.json", "STOP.json", "CLAUDE.md", "AGENTS.md"):
+    if text in ("memories/USER.md", "memories/MEMORY.md", "SOUL.md", "BIRTH.md", "START.md", "GROW.md", "ASK.md", "ASK.json", "STOP.json", "CLAUDE.md", "AGENTS.md"):
         return True
     if text.startswith("skills/") and text.endswith("/SKILL.md"):
         return True

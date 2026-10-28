@@ -6,7 +6,8 @@ import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { defineConfig } from 'vite'
 import { notebookEntries } from './notebook.js'
-import { addProposal, acceptProposal, approvePointer, dropIpSites, listQueue, rejectProposal, upsertPointers } from './queues.js'
+import { addProposal, acceptProposal, approvePointer, dropIpSites, listQueue, pendingProposal, rejectProposal, upsertPointers } from './queues.js'
+import { acceptPending, addPending, isBirthFolder, listPending, rejectPending, shareFiles, shareZip } from './brain-share.js'
 import { lessonBundle, scrubTravelText, travelAnswer } from './travel.js'
 import { lessonFileName, storeZip } from './zip-store.js'
 
@@ -953,6 +954,57 @@ function stagePlugin() {
             return sendJson(res, 500, { error: publicError(error) })
           }
         }
+        if (url.pathname === '/api/shared-brain' || url.pathname === '/api/shared-brain/download' || url.pathname === '/api/shared-brain/notes' || url.pathname === '/api/shared-brain/grow' || url.pathname === '/api/shared-brain/accept' || url.pathname === '/api/shared-brain/reject') {
+          try {
+            const payload = req.method === 'GET' ? { path: url.searchParams.get('path') || '' } : JSON.parse(await readBody(req) || '{}')
+            const folder = homeFromBody(payload)
+            if (!isBirthFolder(folder)) return sendJson(res, 400, { ok: false, error: 'That folder is not a downloaded brain.' })
+            if (url.pathname === '/api/shared-brain/download') {
+              if (req.method !== 'GET') return sendJson(res, 405, { error: 'GET only' })
+              const zip = shareZip(folder)
+              if (zip.length > 8_000_000) return sendJson(res, 413, { error: 'The brain is too large to download.' })
+              res.statusCode = 200
+              res.setHeader('content-type', 'application/zip')
+              res.setHeader('content-length', String(zip.length))
+              res.setHeader('content-disposition', 'attachment; filename="cortex-brain.zip"')
+              res.setHeader('cache-control', 'no-store')
+              return res.end(zip)
+            }
+            if (url.pathname === '/api/shared-brain/notes') {
+              if (req.method !== 'GET') return sendJson(res, 405, { error: 'GET only' })
+              return sendJson(res, 200, { ok: true, notes: listPending(folder) })
+            }
+            if (url.pathname === '/api/shared-brain/grow') {
+              if (req.method !== 'POST') return sendJson(res, 405, { error: 'POST only' })
+              const saved = addPending(folder, payload.from, payload.text)
+              return sendJson(res, 200, { ok: true, ...saved })
+            }
+            if (url.pathname === '/api/shared-brain/accept' || url.pathname === '/api/shared-brain/reject') {
+              if (req.method !== 'POST') return sendJson(res, 405, { error: 'POST only' })
+              const saved = url.pathname.endsWith('/accept')
+                ? acceptPending(folder, payload.id)
+                : rejectPending(folder, payload.id)
+              if (!saved) return sendJson(res, 404, { ok: false, error: 'No note with that id.' })
+              return sendJson(res, 200, { ok: true, ...saved })
+            }
+            if (req.method !== 'GET') return sendJson(res, 405, { error: 'GET only' })
+            const wanted = String(url.searchParams.get('file') || '')
+            const files = shareFiles(folder)
+            if (!wanted) {
+              return sendJson(res, 200, {
+                ok: true,
+                note: 'Read GROW.md, then the soul, the memory, and the skills. Leave a note with POST /api/shared-brain/grow. You cannot accept it.',
+                files,
+              })
+            }
+            const hit = files.find((file) => file.path === wanted)
+            if (!hit) return sendJson(res, 404, { ok: false, error: 'That file is not in this brain.' })
+            const body = scrubTravelText(fs.readFileSync(path.join(folder, hit.path), 'utf8'), 80000)
+            return sendJson(res, 200, { ok: true, path: hit.path, chars: body.length, body })
+          } catch (error) {
+            return sendJson(res, error.status || 400, { ok: false, error: publicError(error) })
+          }
+        }
         if (url.pathname === '/api/brain-export' || url.pathname === '/api/brain-export/manifest') {
           if (req.method !== 'GET') return sendJson(res, 405, { error: 'GET only' })
           try {
@@ -998,13 +1050,17 @@ function stagePlugin() {
           if (req.method !== 'POST') return sendJson(res, 405, { error: 'POST only' })
           try {
             const payload = JSON.parse(await readBody(req))
-            const saved = acceptProposal(learnQueuePath, String(payload.id || ''))
+            const saved = pendingProposal(learnQueuePath, String(payload.id || ''))
             if (!saved) return sendJson(res, 404, { ok: false, error: 'No proposal with that id.' })
             if (saved.already) {
               return sendJson(res, 200, { ok: true, id: saved.id, status: saved.status, memory: false, note: 'That note was already decided.' })
             }
             const clean = scrubTravelText(saved.text, 800).trim()
             const memory = Boolean(clean && clean !== '[held]') && writeAcceptedMemory(saved.from, clean)
+            const marked = acceptProposal(learnQueuePath, saved.id)
+            if (!marked || marked.already) {
+              return sendJson(res, 200, { ok: true, id: saved.id, status: marked?.status || saved.status, memory: false, note: 'That note was already decided.' })
+            }
             return sendJson(res, 200, {
               ok: true,
               id: saved.id,

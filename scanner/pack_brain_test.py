@@ -10,7 +10,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from pack_brain import EMAIL, PHONE, SECRET, build_pack, contract_hash, install_pack, kin_report, public_receipt, verify_pack, PackError
+from pack_brain import BIRTH, EMAIL, PHONE, SECRET, build_pack, contract_hash, install_pack, kin_report, public_receipt, verify_pack, PackError
 
 PATTERN_LOCK = "b171a331b51288424e50c57f3e8b52a1c0b60e2dac0041be270d88b9dff0a19f"
 
@@ -107,6 +107,15 @@ class PackTests(unittest.TestCase):
         self.assertIn("not the source runtime", birth)
         self.assertIn("These lines are advice.", birth)
         self.assertIn("computer that built the pack", birth)
+        self.assertEqual((self.out / "BIRTH.md").read_bytes(), BIRTH.encode("utf-8"))
+        self.assertTrue((self.out / "GROW.md").is_file())
+        grow = (self.out / "GROW.md").read_text(encoding="utf-8")
+        self.assertIn("This folder is a downloaded brain.", grow)
+        self.assertIn("growth/accepted/", grow)
+        grow_row = next(item for item in manifest["files"] if item["path"] == "GROW.md")
+        self.assertEqual(grow_row["redactions"], 0)
+        self.assertEqual(grow_row["bytes"], len((self.out / "GROW.md").read_bytes()))
+        self.assertEqual(grow_row["sha256"], hashlib.sha256((self.out / "GROW.md").read_bytes()).hexdigest())
         note = (self.out / "INSTALL.txt").read_text(encoding="utf-8")
         self.assertIn("does not prove every secret", note)
         self.assertIn("does not keep checking", note)

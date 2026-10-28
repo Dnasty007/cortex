@@ -184,6 +184,7 @@ const desks = {
     { id: 'skill:productivity/plre-application-desk', name: 'plre-application-desk', lobe: 'skills', kind: 'skill', summary: 'apps', body: 'apps' },
     { id: 'skill:productivity/plre-buildium-desk-ops', name: 'plre-buildium-desk-ops', lobe: 'skills', kind: 'skill', summary: 'calendar', body: 'cal' },
     { id: 'skill:desk', name: 'Desk note', lobe: 'skills', kind: 'skill', summary: 'Buildium desk', body: 'short' },
+    { id: 'skill:jobs/grok-bot-browser-jobs', name: 'grok-bot-browser-jobs', lobe: 'skills', kind: 'skill', path: 'skills/grok-bot-browser-jobs/SKILL.md', summary: 'Pull the jobs door', body: 'jobs' },
   ],
 }
 const water = travelAnswer(desks, { for: 'water', limit: '20' })
@@ -218,6 +219,7 @@ assert(calendar.body.hits.some((hit) => hit.name === 'plre-buildium-desk-ops'), 
 assert(!calendar.body.hits.some((hit) => hit.id === 'skill:desk'), 'calendar is not the whole Buildium book')
 const stillGrok = travelAnswer(desks, { for: 'grok-bot', limit: '20' })
 assert(stillGrok.body.hits.some((hit) => hit.id === 'skill:desk'), 'the Grok Bot book still has the desk skill')
+assert(!stillGrok.body.hits.some((hit) => hit.name === 'grok-bot-browser-jobs'), 'the jobs skill stays off the Grok Bot book')
 assert(stillGrok.body.hits.some((hit) => hit.id === 'lesson:cortex-plug-in:grok-bot'), 'the Grok Bot book has the plug-in card')
 assert(!stillGrok.body.hits.some((hit) => hit.name === 'Zebra'), 'the Grok Bot book stays curated')
 const waterPack = lessonBundle(desks, { for: 'water', lessonFor: () => '' })

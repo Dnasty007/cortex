@@ -121,6 +121,16 @@ export function addProposal(file, from, text) {
   return { ok: true, id: item.id, status: 'pending' }
 }
 
+export function pendingProposal(file, id) {
+  const data = readQueue(file)
+  const item = data.items.find((row) => row.id === id)
+  if (!item) return null
+  if (item.status !== 'pending') {
+    return { id: item.id, status: item.status, from: item.from || '', text: item.text || '', already: true }
+  }
+  return { id: item.id, status: 'pending', from: item.from || '', text: item.text || '', already: false }
+}
+
 export function acceptProposal(file, id) {
   const data = readQueue(file)
   const item = data.items.find((row) => row.id === id)
