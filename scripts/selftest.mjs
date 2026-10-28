@@ -1,7 +1,7 @@
 import * as THREE from 'three'
 import { SCALE, brainRadius } from '../src/brain-shape.js'
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js'
-import { adoptLook, applyLook, cameraBasis, flyDelta, parkOrbit } from '../src/frame.js'
+import { adoptLook, applyLook, cameraBasis, flyDelta, parkOrbit, viewPlanePoint } from '../src/frame.js'
 import { layoutNeurons } from '../src/layout.js'
 import { SPINE_ID, isHermesBrain, notebookEntries, stampHermes } from '../src/hermes-mark.js'
 
@@ -165,6 +165,20 @@ try {
 } catch (error) {
   if (error.code !== 'ERR_MODULE_NOT_FOUND') throw error
 }
+
+const slideCam = new THREE.PerspectiveCamera(50, 1, 0.1, 100)
+const slideHit = new THREE.Vector3()
+slideCam.position.set(0, 0, 10)
+slideCam.lookAt(0, 0, 0)
+slideCam.updateMatrixWorld()
+assert(viewPlanePoint(slideCam, new THREE.Vector3(), 0.4, 0, slideHit), 'a view-plane point exists in front of the camera')
+assert(slideHit.x > 0.2, 'screen-right from +z moves the brain toward +x')
+slideCam.position.set(10, 0, 0)
+slideCam.lookAt(0, 0, 0)
+slideCam.updateMatrixWorld()
+slideCam.updateProjectionMatrix()
+assert(viewPlanePoint(slideCam, new THREE.Vector3(), 0.4, 0, slideHit), 'a view-plane point exists from the side')
+assert(slideHit.z < -0.2, 'screen-right from +x moves the brain toward -z')
 
 if (failed) {
   console.error(`${failed} failed`)

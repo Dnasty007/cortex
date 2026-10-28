@@ -23,7 +23,7 @@ npm install
 npm run dev
 ```
 
-Open http://localhost:5179
+Open http://localhost:5173
 
 `start.bat` does the same thing. If a Hermes home is already on this PC, it scans `%LOCALAPPDATA%\hermes` into a local file and then opens the page. That scan stays on your PC.
 

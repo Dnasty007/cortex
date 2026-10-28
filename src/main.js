@@ -5,11 +5,13 @@ import { RenderPass } from 'three/addons/postprocessing/RenderPass.js'
 import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js'
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js'
 import { SCALE, brainRadius, makeHullGeometry } from './brain-shape.js'
-import { adoptLook, applyLook, cameraBasis, flyDelta, parkOrbit } from './frame.js'
+import { adoptLook, applyLook, cameraBasis, flyDelta, parkOrbit, viewPlanePoint } from './frame.js'
 import { applyHealth } from './health.js'
 import { stampHermes } from './hermes-mark.js'
 import { packReview } from './pack.js'
 import { applyPictureDetail } from './picture-detail.js'
+import { attachLiveSkin } from './live-skin.js'
+import { createLiveShow } from './live-show.js'
 import { kinPlain, plainKin } from './kin-plain.js'
 import { LOBE_COLOR, fillHubSummaries, layoutNeurons, withHubs } from './layout.js'
 
@@ -18,6 +20,110 @@ const sourceLine = document.querySelector('#source-line')
 const pictureLine = document.querySelector('#picture-line')
 const sourceSelect = document.querySelector('#source')
 const updateBrainButton = document.querySelector('#update-brain')
+const botDoorLine = document.querySelector('#bot-door-line')
+const botDoorOpen = document.querySelector('#bot-door-open')
+const liveNow = document.querySelector('#live-now')
+const liveLog = document.querySelector('#live-log')
+const liveChat = document.querySelector('#live-chat')
+const liveText = document.querySelector('#live-text')
+const liveWait = []
+let liveSince = 0
+let liveNext = 0
+let liveFocus = null
+const REGION_LABEL = {
+  'frontal-l': 'left front',
+  'frontal-r': 'right front',
+  'temporal-l': 'left side',
+  'temporal-r': 'right side',
+  'parietal-l': 'left top',
+  'parietal-r': 'right top',
+  occipital: 'back',
+  cerebellum: 'low back',
+  brainstem: 'stem',
+  corpus: 'middle',
+}
+
+function appendLive(text) {
+  if (!liveLog) return
+  const item = document.createElement('li')
+  item.textContent = text
+  liveLog.append(item)
+  while (liveLog.children.length > 12) liveLog.firstChild.remove()
+  liveLog.scrollTop = liveLog.scrollHeight
+}
+
+function findLiveNeuron(row) {
+  const id = String(row.id || '')
+  const exact = placed.find((item) => item.id === id)
+  if (exact) return exact
+  let decoded = id
+  try { decoded = decodeURIComponent(id) } catch { decoded = id }
+  if (decoded !== id) {
+    const decodedHit = placed.find((item) => item.id === decoded)
+    if (decodedHit) return decodedHit
+  }
+  const name = String(row.name || '').trim().toLowerCase()
+  if (!name) return null
+  return placed.find((item) => String(item.name || '').trim().toLowerCase() === name) || null
+}
+
+function shortLiveName(name) {
+  const text = String(name || 'a skill').replace(/\s+/g, ' ').trim()
+  return text.length > 36 ? `${text.slice(0, 36)}…` : text
+}
+
+function showLiveRead(row) {
+  const neuron = findLiveNeuron(row)
+  const name = shortLiveName(neuron?.name || row.name || 'a skill')
+  const part = neuron ? (REGION_LABEL[neuron.region] || neuron.region || '') : ''
+  if (liveNow) liveNow.textContent = neuron
+    ? `He is reading ${name}${part ? ` in the ${part}` : ''}`
+    : `He asked for ${name}`
+  appendLive(part ? `${name} · ${part}` : name)
+  if (!neuron) return
+  liveFocus = { id: neuron.id, lobe: neuron.lobe, region: neuron.region || 'corpus' }
+  openInspector(neuron)
+}
+
+function playLiveRead() {
+  if (!liveWait.length || performance.now() < liveNext) return
+  showLiveRead(liveWait.shift())
+  liveNext = performance.now() + 1100
+}
+
+async function pollBotLive() {
+  try {
+    const response = await fetch(`/api/bot-live?since=${liveSince}`)
+    if (!response.ok) return
+    const data = await response.json()
+    for (const row of data.reads || []) {
+      liveSince = Math.max(liveSince, row.n || 0)
+      if (row.kind === 'read' && row.id) liveWait.push(row)
+      else if (row.kind === 'search') appendLive(`He searched ${row.name} (${row.total || 0})`)
+    }
+    for (const row of data.chat || []) {
+      liveSince = Math.max(liveSince, row.n || 0)
+      appendLive(`${row.from}: ${row.text}`)
+    }
+  } catch {
+    /* the picture still works if the door is quiet */
+  }
+}
+
+if (liveChat && liveText) {
+  liveChat.addEventListener('submit', async (event) => {
+    event.preventDefault()
+    const text = liveText.value.trim()
+    if (!text) return
+    liveText.value = ''
+    await fetch('/api/bot-chat', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ from: 'ray', text }),
+    })
+    await pollBotLive()
+  })
+}
 const openHomeButton = document.querySelector('#open-home')
 const openRow = document.querySelector('#open-row')
 const homePath = document.querySelector('#home-path')
@@ -59,11 +165,31 @@ function fitMoveCard() {
   if (!anchor) return
   const brandRect = brandEl.getBoundingClientRect()
   const anchorRect = anchor.getBoundingClientRect()
-  const need = Math.ceil(anchorRect.bottom - brandRect.top + brandEl.scrollTop + 18)
-  const room = window.innerWidth <= 640 ? window.innerHeight - 148 : window.innerHeight - 108
+  const cushion = anchor.id === 'first-move' ? 0 : 22
+  const need = Math.ceil(anchorRect.bottom - brandRect.top + brandEl.scrollTop + cushion)
+  const room = window.innerWidth <= 640 ? window.innerHeight - 148 : window.innerHeight - 222
   const next = Math.min(Math.max(need, 240), Math.max(room, 240))
   const current = parseFloat(brandEl.style.maxHeight)
   if (!Number.isFinite(current) || Math.abs(current - next) > 2) brandEl.style.maxHeight = next + 'px'
+  placeLiveDeck()
+}
+
+function placeLiveDeck() {
+  const live = document.querySelector('#live-feed')
+  if (!live || !brandEl) return
+  if (window.innerWidth <= 640) {
+    live.style.top = ''
+    live.style.bottom = ''
+    live.style.width = ''
+    return
+  }
+  const brandRect = brandEl.getBoundingClientRect()
+  const height = live.offsetHeight || 110
+  const maxTop = window.innerHeight - 74 - height
+  const top = Math.min(Math.round(brandRect.bottom + 12), Math.max(16, maxTop))
+  live.style.top = top + 'px'
+  live.style.bottom = 'auto'
+  live.style.width = brandRect.width + 'px'
 }
 
 const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true })
@@ -88,15 +214,18 @@ camera.position.set(8.6, 3.1, 15.2)
 camera.rotation.order = 'YXZ'
 camera.lookAt(orbitAnchor)
 
-// The orbit target stays the brain. The view window is shifted so that
-// point lands in the open space to the right of the card.
+// The orbit target stays the brain. The view window shifts so that point
+// lands in the open gap between the left column and the inspector.
 function parkFrame() {
   const w = window.innerWidth
   const h = window.innerHeight
   const wide = w > 640
-  const cardRight = wide ? Math.min(520, w - 32) + 32 : 0
-  const aimX = wide ? (cardRight + w - 24) / 2 : w / 2
-  const shiftX = Math.max(0, aimX - w / 2)
+  const cardRight = wide ? Math.min(400, w - 32) + 28 : 0
+  const inspOpen = inspector.classList.contains('open')
+  const inspW = inspOpen ? Math.min(400, w * 0.34) : 0
+  const rightBlock = wide ? (inspOpen ? inspW + 28 : 24) : 0
+  const aimX = wide ? (cardRight + (w - rightBlock)) / 2 : w / 2
+  const shiftX = aimX - w / 2
   const lift = wide ? Math.round(Math.min(80, h * 0.07)) : 0
   camera.setViewOffset(w, h, -shiftX, lift, w, h)
 }
@@ -141,16 +270,31 @@ const fillLight = new THREE.DirectionalLight(0xfff1dc, 0.3)
 fillLight.position.set(-2, -4, 8)
 scene.add(fillLight)
 
+const picture = new THREE.Group()
+scene.add(picture)
+const liveShow = createLiveShow(picture)
+let liveSkin = { set() {} }
+const liveWorld = new THREE.Vector3()
+const matePool = Array.from({ length: 22 }, () => new THREE.Vector3())
+
 const hullGeo = makeHullGeometry(4)
 const hull = new THREE.LineSegments(
   new THREE.WireframeGeometry(hullGeo),
   new THREE.LineBasicMaterial({ color: 0x3d8cff, transparent: true, opacity: 0.22 }),
 )
 hull.visible = false
-scene.add(hull)
+picture.add(hull)
 
 const brainRoot = new THREE.Group()
-scene.add(brainRoot)
+picture.add(brainRoot)
+
+const brainPick = new THREE.Mesh(
+  new THREE.SphereGeometry(1, 12, 8),
+  new THREE.MeshBasicMaterial({ depthWrite: false }),
+)
+brainPick.visible = false
+brainPick.scale.setScalar(8)
+picture.add(brainPick)
 
 // Measured from the GLB vertex field (not from the source photo):
 // X is symmetric (left/right), the sparse thin tip is -Y (brainstem),
@@ -367,6 +511,7 @@ function mountAnatomical(model) {
   trayY = tray.position.y
   deck.position.y = trayY
   const fittedSize = fitted.getSize(new THREE.Vector3())
+  brainPick.scale.setScalar(Math.max(fittedSize.x, fittedSize.y, fittedSize.z) * 0.55)
   const ringR = Math.min(fittedSize.x, fittedSize.z) * 0.22
   holoRings = new THREE.Group()
   const baseY = fitted.min.y + 0.55
@@ -380,6 +525,7 @@ function mountAnatomical(model) {
   lean.position.y = baseY - 0.32
   holoRings.add(equator, meridian, lean)
   brainRoot.add(holoRings)
+  liveSkin = attachLiveSkin(brainRoot)
   surface = buildSurface(holder)
   hull.visible = false
   refitToShell()
@@ -432,7 +578,7 @@ const tray = new THREE.Mesh(
 tray.rotation.x = Math.PI / 2
 tray.position.y = -8.1
 tray.raycast = () => {}
-scene.add(tray)
+picture.add(tray)
 
 const deck = new THREE.Group()
 function deckRing(inner, outer, color, opacity) {
@@ -454,7 +600,7 @@ function deckRing(inner, outer, color, opacity) {
 deck.add(deckRing(2.15, 2.22, 0xfcee0a, 0.28))
 deck.add(deckRing(2.55, 2.62, 0x3ee0ff, 0.2))
 deck.position.y = tray.position.y
-scene.add(deck)
+picture.add(deck)
 
 const neuronGeo = new THREE.SphereGeometry(0.07, 16, 12)
 const hubGeo = new THREE.SphereGeometry(0.13, 18, 14)
@@ -463,6 +609,64 @@ const dimMaterial = new THREE.MeshStandardMaterial({ color: 0x1a242e, emissive: 
 const quarantineMaterial = new THREE.MeshStandardMaterial({ color: 0x9aa3ad, emissive: 0x66707a, emissiveIntensity: 0.3, roughness: 0.4 })
 const selectMaterial = new THREE.MeshStandardMaterial({ color: 0xfff6d8, emissive: 0xffe7a8, emissiveIntensity: 0.8, roughness: 0.2 })
 const healthMaterial = new THREE.MeshStandardMaterial({ color: 0xfcee0a, emissive: 0x8a7408, emissiveIntensity: 0.55, roughness: 0.42 })
+const liveHotMaterial = new THREE.MeshStandardMaterial({
+  color: 0xfff6c2,
+  emissive: 0xfcee0a,
+  emissiveIntensity: 2.4,
+  roughness: 0.15,
+})
+const livePartMaterial = new THREE.MeshStandardMaterial({
+  color: 0xd9fbff,
+  emissive: 0x3ee0ff,
+  emissiveIntensity: 1.15,
+  roughness: 0.22,
+})
+const liveLight = new THREE.PointLight(0xfcee0a, 0, 4.2, 2)
+liveLight.castShadow = false
+picture.add(liveLight)
+const liveHalo = new THREE.Mesh(
+  new THREE.SphereGeometry(0.55, 20, 16),
+  new THREE.MeshBasicMaterial({
+    color: 0xfcee0a,
+    transparent: true,
+    opacity: 0.92,
+    depthWrite: false,
+    toneMapped: false,
+    blending: THREE.AdditiveBlending,
+  }),
+)
+liveHalo.raycast = () => {}
+liveHalo.visible = false
+picture.add(liveHalo)
+function roundGlowTexture() {
+  const canvas = document.createElement('canvas')
+  canvas.width = 128
+  canvas.height = 128
+  const ctx = canvas.getContext('2d')
+  const glow = ctx.createRadialGradient(64, 64, 0, 64, 64, 64)
+  glow.addColorStop(0, 'rgba(255,255,255,1)')
+  glow.addColorStop(0.22, 'rgba(255,255,255,0.9)')
+  glow.addColorStop(0.5, 'rgba(255,255,255,0.28)')
+  glow.addColorStop(1, 'rgba(255,255,255,0)')
+  ctx.fillStyle = glow
+  ctx.fillRect(0, 0, 128, 128)
+  const texture = new THREE.CanvasTexture(canvas)
+  texture.colorSpace = THREE.SRGBColorSpace
+  return texture
+}
+const liveSprite = new THREE.Sprite(new THREE.SpriteMaterial({
+  map: roundGlowTexture(),
+  color: 0xfcee0a,
+  transparent: true,
+  opacity: 0.95,
+  depthWrite: false,
+  toneMapped: false,
+  blending: THREE.AdditiveBlending,
+}))
+liveSprite.scale.set(2.2, 2.2, 1)
+liveSprite.visible = false
+picture.add(liveSprite)
+const liveOut = new THREE.Vector3()
 
 function lobeMaterial(lobe) {
   if (!materials.has(lobe)) {
@@ -502,6 +706,16 @@ let selected = null
 let flying = false
 let lastMove = performance.now()
 let pointerDown = null
+let movingBrain = false
+let carryArmed = false
+let draggingBrain = false
+let swallowClick = false
+let inspectTimer = null
+const clickMarks = []
+const carryPlanePoint = new THREE.Vector3()
+const carryGrab = new THREE.Vector3()
+const carryHit = new THREE.Vector3()
+const hint = document.querySelector('#hint')
 
 function colorHex(lobe) {
   return `#${(LOBE_COLOR[lobe] || 0x9ad7ff).toString(16).padStart(6, '0')}`
@@ -527,10 +741,10 @@ function runPlacementCheck() {
 
 function clearMeshes() {
   for (const neuron of placed) {
-    scene.remove(neuron.mesh)
+    neuron.mesh.removeFromParent()
   }
   if (line) {
-    scene.remove(line)
+    line.removeFromParent()
     line.geometry.dispose()
     line = null
   }
@@ -538,6 +752,7 @@ function clearMeshes() {
   pairs = []
   selected = null
   inspector.classList.remove('open')
+  parkFrame()
 }
 
 function build(nextBrain) {
@@ -558,7 +773,7 @@ function build(nextBrain) {
     mesh.position.copy(neuron.home)
     mesh.userData.neuron = neuron
     neuron.mesh = mesh
-    scene.add(mesh)
+    picture.add(mesh)
     for (const link of neuron.links || []) {
       const other = indexById.get(link)
       if (other == null) continue
@@ -572,7 +787,7 @@ function build(nextBrain) {
   const lineGeo = new THREE.BufferGeometry()
   lineGeo.setAttribute('position', new THREE.BufferAttribute(positions, 3))
   line = new THREE.LineSegments(lineGeo, new THREE.LineBasicMaterial({ color: 0x7ef6ff, transparent: true, opacity: 0.012 }))
-  scene.add(line)
+  picture.add(line)
   const stats = brain.stats || {}
   const source = brain.source || {}
   if (pictureLine) pictureLine.textContent = `Picture · ${source.label || 'Hermes'} · ${source.scanned_at || 'undated'}`
@@ -715,10 +930,12 @@ function openInspector(neuron) {
   inspPath.textContent = neuron.path || ''
   inspBody.value = draft || neuron.body || neuron.summary || ''
   statusLine.textContent = 'Staged edits stay in this app. Hermes files are not changed.'
+  parkFrame()
 }
 
 function markMoved() {
-  controls.autoRotate = !flying && performance.now() - lastMove > 2500
+  const parked = picture.position.lengthSq() < 1e-6
+  controls.autoRotate = !flying && !movingBrain && parked && performance.now() - lastMove > 2500
 }
 
 function desiredKick(neuron) {
@@ -731,6 +948,15 @@ function desiredKick(neuron) {
 
 function updateNeurons(dt, elapsed) {
   let tray = 0
+  let hotPoint = null
+  if (liveFocus) {
+    for (const item of placed) {
+      if (item.id === liveFocus.id && item.mesh) {
+        hotPoint = item.mesh.position
+        break
+      }
+    }
+  }
   for (const neuron of placed) {
     if (neuron.quarantine) {
       const angle = tray * 0.55
@@ -743,16 +969,24 @@ function updateNeurons(dt, elapsed) {
     const blend = 1 - Math.exp(-dt * 5)
     neuron.mesh.position.lerp(neuron.target, blend)
     const visible = !matchIds || matchIds.has(neuron.id)
+    const inPart = liveFocus && neuron.lobe === liveFocus.lobe && (neuron.region || 'corpus') === liveFocus.region
+    const nearPart = inPart && hotPoint && neuron.mesh.position.distanceToSquared(hotPoint) < 10
     if (neuron.quarantine) neuron.mesh.material = quarantineMaterial
+    else if (liveFocus && neuron.id === liveFocus.id) neuron.mesh.material = liveHotMaterial
+    else if (nearPart) neuron.mesh.material = livePartMaterial
     else if (neuron === selected) neuron.mesh.material = selectMaterial
+    else if (liveFocus) neuron.mesh.material = dimMaterial
     else if (healthOnly && visible && neuron.health && neuron.health.length) neuron.mesh.material = healthMaterial
     else neuron.mesh.material = visible ? lobeMaterial(neuron.lobe) : dimMaterial
     let scale = neuron.kind === 'hub' ? 1 : 1
-    if (neuron === selected) scale = 1.65
+    if (liveFocus && neuron.id === liveFocus.id) scale = 2.6
+    else if (nearPart) scale = neuron.kind === 'hub' ? 1.8 : 1.35
+    else if (neuron === selected) scale = 1.65
     else if (neuron.kind === 'spine' && !neuron.quarantine) scale = 1.45
     else if (neuron.kind === 'heartbeat' && !neuron.quarantine) scale = 1 + Math.sin(elapsed * 3) * 0.28
     neuron.mesh.scale.setScalar(scale)
   }
+  placeLiveGlow(elapsed)
   if (!line || pairs.length === 0) return
   const positions = line.geometry.attributes.position
   let write = 0
@@ -766,12 +1000,78 @@ function updateNeurons(dt, elapsed) {
   line.geometry.setDrawRange(0, pairs.length * 2)
 }
 
+function liveMates(neuron) {
+  const near = []
+  const region = neuron.region || 'corpus'
+  for (const item of placed) {
+    if (!item.mesh || item.id === neuron.id || item.lobe !== neuron.lobe) continue
+    if ((item.region || 'corpus') !== region) continue
+    near.push(item)
+  }
+  near.sort((a, b) => a.mesh.position.distanceToSquared(neuron.mesh.position) - b.mesh.position.distanceToSquared(neuron.mesh.position))
+  const mates = []
+  const count = Math.min(matePool.length, near.length)
+  for (let i = 0; i < count; i++) {
+    matePool[i].copy(near[i].mesh.position)
+    mates.push(matePool[i])
+  }
+  return mates
+}
+
+function placeLiveGlow(elapsed) {
+  const neuron = liveFocus ? placed.find((item) => item.id === liveFocus.id) : null
+  const locked = Boolean(neuron?.mesh)
+  document.body.classList.toggle('live-locked', locked)
+  deck.visible = !locked
+  tray.visible = !locked
+  if (holoRings) holoRings.visible = !locked
+  if (!locked) {
+    liveLight.intensity = 0
+    liveHalo.visible = false
+    liveSprite.visible = false
+    liveSkin.set(liveWorld, 0x000000, 0, elapsed)
+    liveShow.tick(elapsed, null)
+    return
+  }
+  const pulse = 0.72 + Math.sin(elapsed * 7) * 0.28
+  const color = LOBE_COLOR[neuron.lobe] || 0xfcee0a
+  liveOut.copy(neuron.mesh.position)
+  if (liveOut.lengthSq() > 1e-6) liveOut.normalize()
+  else liveOut.set(0, 1, 0)
+  liveHalo.visible = false
+  liveSprite.visible = false
+  neuron.mesh.getWorldPosition(liveWorld)
+  liveSkin.set(liveWorld, color, 1, elapsed)
+  liveShow.tick(elapsed, {
+    position: neuron.mesh.position,
+    normal: liveOut,
+    color,
+    mates: liveMates(neuron),
+  })
+  liveLight.color.set(color)
+  liveLight.position.copy(neuron.mesh.position).addScaledVector(liveOut, 0.45)
+  liveLight.intensity = 6 * pulse
+  liveLight.distance = 3.8
+  livePartMaterial.color.set(color)
+  livePartMaterial.emissive.set(color)
+  liveHotMaterial.emissive.set(color)
+}
+
+function easeBloom(dt) {
+  const on = liveFocus ? 1 : 0
+  const blend = 1 - Math.exp(-Math.max(dt, 0.001) * 3.5)
+  bloom.strength += ((on ? 0.2 : 0.1) - bloom.strength) * blend
+  bloom.threshold += ((on ? 0.78 : 0.9) - bloom.threshold) * blend
+  bloom.radius += ((on ? 0.28 : 0.2) - bloom.radius) * blend
+}
+
 function pick(event) {
-  const rect = renderer.domElement.getBoundingClientRect()
-  pointer.x = ((event.clientX - rect.left) / rect.width) * 2 - 1
-  pointer.y = -((event.clientY - rect.top) / rect.height) * 2 + 1
+  pointerNdc(event)
   raycaster.setFromCamera(pointer, camera)
-  const hits = raycaster.intersectObjects(placed.map((neuron) => neuron.mesh), false)
+  const meshes = []
+  for (const neuron of placed) if (neuron.mesh) meshes.push(neuron.mesh)
+  if (!meshes.length) return null
+  const hits = raycaster.intersectObjects(meshes, false)
   return hits.length ? hits[0].object.userData.neuron : null
 }
 
@@ -800,8 +1100,55 @@ async function stage(op, id, text) {
   if (selected) openInspector(selected)
 }
 
+function setMoveMode(on) {
+  movingBrain = on
+  carryArmed = false
+  draggingBrain = false
+  document.body.classList.toggle('moving-brain', on)
+  document.body.classList.remove('dragging-brain')
+  if (hint) hint.textContent = on
+    ? 'Drag the brain. Triple-click again to turn.'
+    : 'Drag to turn. Triple-click the brain to move it.'
+  if (!flying) controls.enabled = !on
+  if (on) controls.autoRotate = false
+}
+
+function pointerNdc(event) {
+  const rect = renderer.domElement.getBoundingClientRect()
+  pointer.x = ((event.clientX - rect.left) / rect.width) * 2 - 1
+  pointer.y = -((event.clientY - rect.top) / rect.height) * 2 + 1
+}
+
+function hitBrain(event) {
+  pointerNdc(event)
+  raycaster.setFromCamera(pointer, camera)
+  if (raycaster.intersectObject(brainPick, false).length) return true
+  const meshes = []
+  for (const neuron of placed) if (neuron.mesh) meshes.push(neuron.mesh)
+  return meshes.length > 0 && raycaster.intersectObjects(meshes, false).length > 0
+}
+
+function armCarry(event) {
+  carryArmed = true
+  pointerNdc(event)
+  carryPlanePoint.copy(picture.position)
+  if (viewPlanePoint(camera, carryPlanePoint, pointer.x, pointer.y, carryHit)) {
+    carryGrab.copy(picture.position).sub(carryHit)
+  } else {
+    carryGrab.set(0, 0, 0)
+  }
+}
+
+function slideBrain(event) {
+  pointerNdc(event)
+  if (!viewPlanePoint(camera, carryPlanePoint, pointer.x, pointer.y, carryHit)) return
+  picture.position.copy(carryHit).add(carryGrab)
+  noteActivity()
+}
+
 function setFly(next) {
   if (next === flying) return
+  if (next && movingBrain) setMoveMode(false)
   flying = next
   flyButton.classList.toggle('active', flying)
   flyButton.textContent = flying ? 'Orbit' : 'Fly'
@@ -819,20 +1166,69 @@ function setFly(next) {
 }
 
 renderer.domElement.addEventListener('pointerdown', (event) => {
+  if (event.button !== 0 || flying) return
+  if (inspectTimer) {
+    clearTimeout(inspectTimer)
+    inspectTimer = null
+  }
+  const now = performance.now()
+  if (clickMarks.length && now - clickMarks[clickMarks.length - 1] > 500) clickMarks.length = 0
+  clickMarks.push(now)
+  const triple = event.detail === 3 || clickMarks.length >= 3
+  if (triple && hitBrain(event)) {
+    clickMarks.length = 0
+    event.stopPropagation()
+    event.preventDefault()
+    const turningOn = !movingBrain
+    setMoveMode(turningOn)
+    swallowClick = true
+    if (turningOn) {
+      pointerDown = { x: event.clientX, y: event.clientY }
+      armCarry(event)
+    }
+  }
+}, true)
+
+renderer.domElement.addEventListener('pointerdown', (event) => {
   pointerDown = { x: event.clientX, y: event.clientY }
+  if (movingBrain && event.button === 0 && !swallowClick) armCarry(event)
   noteActivity()
 })
 
 renderer.domElement.addEventListener('pointerup', (event) => {
+  if (swallowClick) {
+    swallowClick = false
+    carryArmed = false
+    draggingBrain = false
+    document.body.classList.remove('dragging-brain')
+    pointerDown = null
+    return
+  }
   if (!pointerDown) return
   const moved = Math.hypot(event.clientX - pointerDown.x, event.clientY - pointerDown.y)
   pointerDown = null
-  if (moved > 5 || flying) return
+  carryArmed = false
+  draggingBrain = false
+  document.body.classList.remove('dragging-brain')
+  if (moved > 5 || flying || movingBrain) return
   const neuron = pick(event)
-  if (neuron) openInspector(neuron)
+  if (!neuron) return
+  inspectTimer = setTimeout(() => {
+    inspectTimer = null
+    if (!movingBrain) openInspector(neuron)
+  }, 320)
 })
 
 renderer.domElement.addEventListener('pointermove', (event) => {
+  if (carryArmed && pointerDown) {
+    const moved = Math.hypot(event.clientX - pointerDown.x, event.clientY - pointerDown.y)
+    if (moved > 5) {
+      draggingBrain = true
+      document.body.classList.add('dragging-brain')
+      slideBrain(event)
+    }
+    return
+  }
   if (flying) return
   const neuron = pick(event)
   if (!neuron) {
@@ -880,7 +1276,14 @@ window.addEventListener('keydown', (event) => {
     return
   }
   if (event.code === 'Escape') {
-    if (inspector.classList.contains('open')) inspector.classList.remove('open')
+    if (movingBrain) {
+      setMoveMode(false)
+      return
+    }
+    if (inspector.classList.contains('open')) {
+      inspector.classList.remove('open')
+      parkFrame()
+    }
     else if (flying) setFly(false)
     return
   }
@@ -907,7 +1310,10 @@ pullInput.addEventListener('input', noteActivity)
 controls.addEventListener('start', noteActivity)
 controls.addEventListener('change', noteActivity)
 
-document.querySelector('#close').addEventListener('click', () => inspector.classList.remove('open'))
+document.querySelector('#close').addEventListener('click', () => {
+  inspector.classList.remove('open')
+  parkFrame()
+})
 document.querySelector('#save').addEventListener('click', async () => {
   if (!selected) return
   try {
@@ -1620,6 +2026,7 @@ window.addEventListener('resize', () => {
 })
 
 function animate() {
+  playLiveRead()
   const dt = Math.min(clock.getDelta(), 0.05)
   const elapsed = clock.elapsedTime
   markMoved()
@@ -1633,8 +2040,10 @@ function animate() {
     controls.update()
   }
   if (placed.length) updateNeurons(dt, elapsed)
+  else placeLiveGlow(elapsed)
+  easeBloom(dt)
   holoMat.uniforms.uTime.value = elapsed
-  if (holoRings) holoRings.rotation.y = elapsed * 0.12
+  if (holoRings) holoRings.rotation.y = elapsed * (liveFocus ? 0.48 : 0.12)
   composer.render()
   requestAnimationFrame(animate)
 }
@@ -1661,7 +2070,98 @@ async function loadSelf() {
   }
 }
 
+let learnStamp = ''
+
+async function refreshLearnInbox() {
+  const box = document.querySelector('#learn-inbox')
+  if (!box) return
+  try {
+    const response = await fetch('/api/brain-learn', { cache: 'no-store' })
+    const data = await response.json()
+    const proposals = Array.isArray(data.proposals) ? data.proposals : []
+    const stamp = proposals.map((item) => `${item.id}:${item.text}`).join('|')
+    if (stamp === learnStamp) return
+    learnStamp = stamp
+    box.replaceChildren()
+    if (!proposals.length) {
+      const empty = document.createElement('p')
+      empty.className = 'aside-note'
+      empty.textContent = 'No notes waiting.'
+      box.append(empty)
+      return
+    }
+    for (const item of proposals) {
+      const row = document.createElement('p')
+      row.className = 'aside-note'
+      const text = document.createElement('span')
+      text.textContent = `${item.from || 'bot'}: ${item.text}`
+      const accept = document.createElement('button')
+      accept.type = 'button'
+      accept.textContent = 'Accept'
+      accept.addEventListener('click', () => decideLearn(item.id, 'accept'))
+      const reject = document.createElement('button')
+      reject.type = 'button'
+      reject.textContent = 'Reject'
+      reject.addEventListener('click', () => decideLearn(item.id, 'reject'))
+      row.append(text, document.createTextNode(' '), accept, document.createTextNode(' '), reject)
+      box.append(row)
+    }
+  } catch {
+    /* the picture still works if the inbox is quiet */
+  }
+}
+
+async function decideLearn(id, action) {
+  learnStamp = ''
+  await fetch(`/api/brain-learn/${action}`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ id }),
+  })
+  await refreshLearnInbox()
+}
+
+async function refreshBotDoor() {
+  if (!botDoorLine) return
+  try {
+    const response = await fetch('/api/bot-door')
+    const data = await response.json()
+    if (!response.ok) throw new Error(data.error || 'The door check failed.')
+    if (data.tunnel) {
+      botDoorLine.textContent = 'The tunnel is open. His computer can call /brain on the jobs bridge.'
+      if (botDoorOpen) botDoorOpen.hidden = true
+    } else {
+      botDoorLine.textContent = 'The tunnel is closed. His computer cannot see this picture yet.'
+      if (botDoorOpen) botDoorOpen.hidden = false
+    }
+  } catch (error) {
+    botDoorLine.textContent = error.message || 'The door check failed.'
+  }
+}
+
+if (botDoorOpen) {
+  botDoorOpen.addEventListener('click', async () => {
+    botDoorOpen.disabled = true
+    botDoorLine.textContent = 'Opening the tunnel…'
+    try {
+      const response = await fetch('/api/bot-door', { method: 'POST' })
+      const data = await response.json()
+      if (!response.ok) throw new Error(data.error || 'The tunnel did not open.')
+    } catch (error) {
+      botDoorLine.textContent = error.message || 'The tunnel did not open.'
+    } finally {
+      botDoorOpen.disabled = false
+      await refreshBotDoor()
+    }
+  })
+}
+
 async function boot() {
+  await refreshBotDoor()
+  await refreshLearnInbox()
+  setInterval(refreshLearnInbox, 5000)
+  await pollBotLive()
+  setInterval(pollBotLive, 1000)
   await loadStage()
   selfSnapshot = await loadSelf()
   brains = await loadBrains()

@@ -16,7 +16,7 @@ function Write-Log($message) {
 function Test-Port {
   try {
     $client = New-Object System.Net.Sockets.TcpClient
-    $client.Connect('127.0.0.1', 5179)
+    $client.Connect('127.0.0.1', 5173)
     $client.Close()
     return $true
   } catch {
@@ -43,14 +43,14 @@ if (-not (Test-Port)) {
     Start-Sleep -Milliseconds 500
     if (Test-Port) { $ready = $true; break }
   }
-  if (-not $ready) { Write-Log 'server did not open 5179'; exit 1 }
+  if (-not $ready) { Write-Log 'server did not open 5173'; exit 1 }
 }
 
 $edge = "${env:ProgramFiles(x86)}\Microsoft\Edge\Application\msedge.exe"
 if (-not (Test-Path $edge)) { $edge = "$env:ProgramFiles\Microsoft\Edge\Application\msedge.exe" }
 $profile = Join-Path $logDir 'edge'
 Start-Process -FilePath $edge -ArgumentList @(
-  '--app=http://127.0.0.1:5179/',
+  '--app=http://127.0.0.1:5173/',
   "--user-data-dir=$profile",
   '--window-size=1440,900',
   '--no-first-run'
@@ -61,14 +61,14 @@ $ssh = "$env:SystemRoot\System32\OpenSSH\ssh.exe"
 $key = Join-Path $env:USERPROFILE '.ssh\id_ed25519'
 $tunnelUp = $false
 Get-CimInstance Win32_Process -Filter "Name = 'ssh.exe'" | ForEach-Object {
-  if ($_.CommandLine -match '25179:127.0.0.1:5179') { $tunnelUp = $true }
+  if ($_.CommandLine -match '25179:127.0.0.1:5173') { $tunnelUp = $true }
 }
 $hostFile = Join-Path $root '.hermes-host'
 $target = ''
 if (Test-Path $hostFile) { $target = (Get-Content -Path $hostFile -TotalCount 1).Trim() }
 if (-not $tunnelUp -and $target -match '^[\w.@:-]+$' -and (Test-Path $ssh) -and (Test-Path $key)) {
   $tunnelErr = Join-Path $logDir 'tunnel.err'
-  $tunnelCmd = "cmd.exe /c `"`"$ssh`" -i `"$key`" -o BatchMode=yes -o ExitOnForwardFailure=yes -o TCPKeepAlive=yes -o ServerAliveInterval=30 -o ServerAliveCountMax=4 -o StrictHostKeyChecking=accept-new -N -R 127.0.0.1:25179:127.0.0.1:5179 $target >> `"$tunnelErr`" 2>&1`""
+  $tunnelCmd = "cmd.exe /c `"`"$ssh`" -i `"$key`" -o BatchMode=yes -o ExitOnForwardFailure=yes -o TCPKeepAlive=yes -o ServerAliveInterval=30 -o ServerAliveCountMax=4 -o StrictHostKeyChecking=accept-new -N -R 127.0.0.1:25179:127.0.0.1:5173 $target >> `"$tunnelErr`" 2>&1`""
   $spawn = ([wmiclass]'Win32_Process').Create($tunnelCmd, $root)
   Start-Sleep -Seconds 2
   $alive = Get-Process -Id $spawn.ProcessId -ErrorAction SilentlyContinue

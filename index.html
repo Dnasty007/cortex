@@ -58,6 +58,13 @@
         <select id="source" hidden></select>
         <button id="open-home" type="button" title="Show or hide the path box.">Folder</button>
       </div>
+      <section class="fn" id="bot-door">
+        <p><strong>Grok Bot.</strong> Each bot reads this picture with the brain door. Each skill they open lights one dot here. That door cannot open jobs.</p>
+        <p id="bot-door-how" class="aside-note">GET /brain?for=the-bot&amp;limit=5 then GET /brain?id=the id it returns</p>
+        <p id="bot-door-line" class="aside-note">Checking the door…</p>
+        <button id="bot-door-open" type="button" hidden>Open the tunnel</button>
+        <div id="learn-inbox"></div>
+      </section>
       <input id="search" type="search" placeholder="Search the picture" />
       <nav id="lobes"></nav>
     </header>
@@ -81,13 +88,21 @@
       <label>Pull apart <input id="pull" type="range" min="0" max="1" step="0.01" value="0" /></label>
       <button id="fly" type="button">Fly</button>
       <span id="counts" class="meta"></span>
-      <span id="hint" class="meta">Picture only. Drag to turn.</span>
+      <span id="picture-key" aria-hidden="true">
+        <span class="chip chip-skills">skills</span>
+        <span class="chip chip-memory">memory</span>
+        <span class="chip chip-jobs">jobs</span>
+      </span>
+      <span id="hint" class="meta">Drag to turn. Triple-click the brain to move it.</span>
     </footer>
-    <div id="picture-key" aria-hidden="true">
-      <span class="chip chip-skills">skills</span>
-      <span class="chip chip-memory">memory</span>
-      <span class="chip chip-jobs">jobs</span>
-    </div>
+    <aside id="live-feed" class="panel">
+      <p id="live-now">Waiting for Grok Bot to read.</p>
+      <ol id="live-log"></ol>
+      <form id="live-chat">
+        <input id="live-text" type="text" maxlength="500" placeholder="Talk to him while he reads" />
+        <button type="submit">Send</button>
+      </form>
+    </aside>
     <div id="tooltip"></div>
     <div id="empty" class="panel">
       <p>No Hermes picture yet. The move still works. Paste the original folder on the left, then press Build.</p>

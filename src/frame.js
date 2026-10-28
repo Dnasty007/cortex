@@ -47,6 +47,24 @@ export function applyLook(camera, euler, movementX, movementY, sensitivity = 0.0
 
 // Hand the camera back to orbit around the brain, not around whatever
 // point happened to sit 8 units in front of the lens.
+const _slideRay = new THREE.Raycaster()
+const _slideNdc = new THREE.Vector2()
+const _slideNormal = new THREE.Vector3()
+const _slidePlane = new THREE.Plane()
+const _slideHit = new THREE.Vector3()
+
+// Point on the plane through planePoint that faces the camera.
+// The plane normal is the camera's look direction, so the point tracks the cursor.
+export function viewPlanePoint(camera, planePoint, ndcX, ndcY, out) {
+  _slideNdc.set(ndcX, ndcY)
+  _slideRay.setFromCamera(_slideNdc, camera)
+  camera.getWorldDirection(_slideNormal)
+  _slidePlane.setFromNormalAndCoplanarPoint(_slideNormal, planePoint)
+  if (!_slideRay.ray.intersectPlane(_slidePlane, _slideHit)) return false
+  out.copy(_slideHit)
+  return true
+}
+
 export function parkOrbit(camera, controls, anchor) {
   _offset.copy(camera.position).sub(anchor)
   if (_offset.length() < controls.minDistance) {

@@ -1,4 +1,4 @@
-import { spawn } from 'node:child_process'
+import { execFileSync, spawn } from 'node:child_process'
 import { randomBytes } from 'node:crypto'
 import fs from 'node:fs'
 import os from 'node:os'
@@ -6,6 +6,9 @@ import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { defineConfig } from 'vite'
 import { notebookEntries } from './notebook.js'
+import { addProposal, acceptProposal, approvePointer, dropIpSites, listQueue, rejectProposal, upsertPointers } from './queues.js'
+import { lessonBundle, scrubTravelText, travelAnswer } from './travel.js'
+import { lessonFileName, storeZip } from './zip-store.js'
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 
@@ -22,6 +25,123 @@ function loadSpineId() {
 }
 
 const SPINE_ID = loadSpineId()
+
+const botLive = { n: 0, reads: [], chat: [] }
+
+function rememberBot(kind, fields) {
+  botLive.n += 1
+  const row = { n: botLive.n, at: new Date().toISOString(), kind, ...fields }
+  const bucket = kind === 'chat' ? botLive.chat : botLive.reads
+  bucket.push(row)
+  if (bucket.length > 80) bucket.splice(0, bucket.length - 80)
+  return row
+}
+
+function noteTravel(answer, query) {
+  const neuron = answer?.body?.neuron
+  if (neuron?.id) {
+    rememberBot('read', {
+      id: String(neuron.id),
+      name: String(neuron.name || ''),
+      lobe: String(neuron.lobe || ''),
+      skill: String(neuron.kind || ''),
+    })
+    return
+  }
+  const q = String(query?.q || '').trim()
+  const lobe = String(query?.lobe || '').trim()
+  const learn = String(query?.learn || '')
+  const audience = String(query?.for || '')
+  if (!q && !lobe && !learn && !audience) return
+  rememberBot('search', {
+    id: '',
+    name: q || lobe || audience || 'skills to study',
+    lobe,
+    total: Number(answer?.body?.total || 0),
+  })
+}
+
+function botLiveSince(sinceRaw) {
+  const since = Number(sinceRaw)
+  const cursor = Number.isFinite(since) ? since : 0
+  return {
+    ok: true,
+    n: botLive.n,
+    reads: botLive.reads.filter((row) => row.n > cursor),
+    chat: botLive.chat.filter((row) => row.n > cursor),
+  }
+}
+
+function addBotChat(from, text) {
+  const clean = String(text || '').replace(/\s+/g, ' ').trim().slice(0, 500)
+  if (!clean) return { status: 400, body: { ok: false, error: 'Say something.' } }
+  const who = String(from || 'ray').replace(/[^\w .:-]/g, '').slice(0, 40) || 'ray'
+  return { status: 200, body: { ok: true, line: rememberBot('chat', { from: who, text: clean }) } }
+}
+
+function noteNewPicture(before, after) {
+  const next = String(after || '')
+  if (!next || next === String(before || '')) return
+  addBotChat('cortex', 'picture updated')
+}
+
+function ownerTarget() {
+  try {
+    const line = fs.readFileSync(path.join(root, '.hermes-host'), 'utf8').split(/\r?\n/)[0].trim()
+    if (!/^[\w.@:-]+$/.test(line)) return ''
+    return line
+  } catch {
+    return ''
+  }
+}
+
+function tunnelUp() {
+  try {
+    const out = execFileSync(
+      'powershell.exe',
+      ['-NoProfile', '-Command', "Get-CimInstance Win32_Process -Filter \"Name = 'ssh.exe'\" | Select-Object -ExpandProperty CommandLine"],
+      { encoding: 'utf8', timeout: 8000, windowsHide: true },
+    )
+    return String(out).includes('25179:127.0.0.1:5173')
+  } catch {
+    return false
+  }
+}
+
+function botDoorStatus() {
+  return {
+    ok: true,
+    tunnel: tunnelUp(),
+    read: 'GET /brain?for=grok-bot&limit=5 then GET /brain?id=the id',
+    note: 'The brain door reads /brain only. Jobs stay on the other door.',
+  }
+}
+
+async function openBotTunnel() {
+  if (tunnelUp()) return botDoorStatus()
+  const target = ownerTarget()
+  if (!target) throw new Error('No server address on this PC. The tunnel was not opened.')
+  const ssh = path.join(process.env.SystemRoot || 'C:\\Windows', 'System32', 'OpenSSH', 'ssh.exe')
+  const key = path.join(os.homedir(), '.ssh', 'id_ed25519')
+  if (!fs.existsSync(ssh) || !fs.existsSync(key)) throw new Error('SSH is not available. The tunnel was not opened.')
+  const child = spawn(ssh, [
+    '-i', key,
+    '-o', 'BatchMode=yes',
+    '-o', 'ExitOnForwardFailure=yes',
+    '-o', 'TCPKeepAlive=yes',
+    '-o', 'ServerAliveInterval=30',
+    '-o', 'ServerAliveCountMax=4',
+    '-o', 'StrictHostKeyChecking=accept-new',
+    '-N',
+    '-R', '127.0.0.1:25179:127.0.0.1:5173',
+    target,
+  ], { detached: true, stdio: 'ignore', windowsHide: true })
+  child.unref()
+  await new Promise((resolve) => setTimeout(resolve, 2000))
+  const status = botDoorStatus()
+  if (!status.tunnel) throw new Error('The tunnel did not stay open.')
+  return status
+}
 
 function ownerHost() {
   try {
@@ -109,6 +229,234 @@ function sendJson(res, code, body) {
   res.statusCode = code
   res.setHeader('content-type', 'application/json')
   res.end(JSON.stringify(body))
+}
+
+const learnQueuePath = path.join(staging, 'learn-queue.json')
+const bitwardenQueuePath = path.join(staging, 'bitwarden-queue.json')
+const pictureWatchPath = path.join(staging, 'picture-watch.json')
+const acceptedMemoryPath = path.join(staging, 'accepted-memory.md')
+
+function readAcceptedMemory() {
+  try {
+    return fs.readFileSync(acceptedMemoryPath, 'utf8')
+  } catch {
+    return ''
+  }
+}
+
+function writeAcceptedMemory(from, text) {
+  const clean = String(text || '').trim()
+  if (!clean) return false
+  const who = String(from || 'bot').replace(/[^\w .:-]/g, '').slice(0, 40) || 'bot'
+  const block = `\n\n## Accepted ${new Date().toISOString().slice(0, 10)}\nFrom ${who}\n\n${clean}\n`
+  fs.mkdirSync(staging, { recursive: true })
+  fs.appendFileSync(acceptedMemoryPath, block, 'utf8')
+  return true
+}
+
+function packAtLabel() {
+  const dir = latestPackDir()
+  const name = dir ? path.basename(dir) : ''
+  const match = name.match(/(\d{4})(\d{2})(\d{2})-(\d{2})(\d{2})(\d{2})/)
+  if (!match) return ''
+  return `${match[1]}-${match[2]}-${match[3]} ${match[4]}:${match[5]}`
+}
+
+function stampTravel(answer) {
+  if (!answer?.body || typeof answer.body !== 'object') return answer
+  answer.body.pack_at = packAtLabel()
+  answer.body.picture_watch = '30m'
+  const neuron = answer.body.neuron
+  if (neuron && Array.isArray(answer.body.bitwarden) && answer.body.bitwarden.length) {
+    answer.body.bitwarden = upsertPointers(bitwardenQueuePath, neuron.id, answer.body.bitwarden)
+  }
+  return answer
+}
+
+function bookManifest(bundle) {
+  return {
+    ok: true,
+    scanned_at: bundle.scanned_at,
+    pack_at: packAtLabel(),
+    total: bundle.total,
+    bot: bundle.bot || '',
+    note: `Scrubbed ${bundle.bot || 'bot'} book. id, chars, and hash. Jobs, chats, and keys are not in this pack.`,
+    files: bundle.files.map((file) => ({
+      id: file.id,
+      name: file.name,
+      file: file.name === 'cortex-plug-in.md' ? 'cortex-plug-in.md' : lessonFileName(file.id),
+      chars: file.chars,
+      hash: file.hash,
+      needs_bitwarden: file.needs_bitwarden,
+    })),
+  }
+}
+
+function bitwardenItems() {
+  dropIpSites(bitwardenQueuePath)
+  try {
+    const brain = loadBrain()
+    if (brain) {
+      const page = travelAnswer(brain, { for: 'grok-bot', limit: '80', offset: '0' }, {
+        lessonFor,
+        acceptedMemory: readAcceptedMemory,
+        limitMax: 80,
+      })
+      for (const hit of page.body?.hits || []) {
+        if (!hit.needs_bitwarden) continue
+        const one = travelAnswer(brain, { id: hit.id }, { lessonFor, acceptedMemory: readAcceptedMemory })
+        const pointers = (one.body?.bitwarden || []).filter((item) => item.site || item.username)
+        if (pointers.length) upsertPointers(bitwardenQueuePath, hit.id, pointers)
+      }
+    }
+  } catch {
+    /* keep the queue already stored */
+  }
+  dropIpSites(bitwardenQueuePath)
+  return listQueue(bitwardenQueuePath).filter((item) => (item.site || item.username) && !/^\d{1,3}(?:\.\d{1,3}){3}/.test(String(item.site || '')))
+}
+
+function bookZip(bundle) {
+  const manifest = bookManifest(bundle)
+  const files = [
+    { name: 'manifest.json', data: JSON.stringify(manifest, null, 2) },
+    ...bundle.files.map((file) => ({
+      name: file.name === 'cortex-plug-in.md' ? 'cortex-plug-in.md' : lessonFileName(file.id),
+      data: file.body || '',
+    })),
+  ]
+  return { manifest, zip: storeZip(files) }
+}
+
+function writePictureWatch(state) {
+  fs.mkdirSync(staging, { recursive: true })
+  fs.writeFileSync(pictureWatchPath, JSON.stringify(state, null, 2), 'utf8')
+}
+
+async function remoteLessonStamp() {
+  const target = ownerTarget()
+  if (!target) return 0
+  const ssh = path.join(process.env.SystemRoot || 'C:\\Windows', 'System32', 'OpenSSH', 'ssh.exe')
+  const key = path.join(os.homedir(), '.ssh', 'id_ed25519')
+  const script = [
+    'import os',
+    'best=0',
+    "names=('SKILL.md','MEMORY.md','USER.md','SOUL.md')",
+    "for base in ('/root/.hermes/skills','/root/.hermes/memories'):",
+    '    for dp, ds, fs in os.walk(base):',
+    '        for name in fs:',
+    '            if name in names:',
+    '                best=max(best, int(os.stat(os.path.join(dp, name)).st_mtime))',
+    "soul='/root/.hermes/SOUL.md'",
+    'if os.path.isfile(soul):',
+    '    best=max(best, int(os.stat(soul).st_mtime))',
+    'print(best)',
+  ].join('\n')
+  const remote = `python3 -c "import base64; exec(base64.b64decode('${Buffer.from(script).toString('base64')}').decode())"`
+  try {
+    const out = await spawnCapture(ssh, [
+      '-i', key,
+      '-o', 'BatchMode=yes',
+      '-o', 'ConnectTimeout=12',
+      target,
+      remote,
+    ], 25_000)
+    const match = String(out).match(/(\d{9,})/)
+    return match ? Number(match[1]) : 0
+  } catch {
+    return 0
+  }
+}
+
+function packEpoch() {
+  const dir = latestPackDir()
+  if (!dir) return 0
+  try { return Math.floor(fs.statSync(dir).mtimeMs / 1000) } catch { return 0 }
+}
+
+async function refreshPictureIfNewer() {
+  if (dropletScan || serverPack) return { ok: true, skipped: true }
+  const remote = await remoteLessonStamp()
+  const saved = readJsonIf(pictureWatchPath) || {}
+  const checkedAt = new Date().toISOString()
+  if (!remote) {
+    const failed = {
+      ok: false,
+      changed: false,
+      checked_at: checkedAt,
+      error: 'check failed',
+      remote_mtime: Number(saved.remote_mtime || 0),
+    }
+    writePictureWatch(failed)
+    return failed
+  }
+  const baseline = Number(saved.remote_mtime || 0) || packEpoch()
+  if (remote <= baseline) {
+    const state = { ok: true, changed: false, checked_at: checkedAt, remote_mtime: remote }
+    writePictureWatch(state)
+    return state
+  }
+  const beforeStamp = loadBrain()?.source?.scanned_at || ''
+  try {
+    await buildServerPack()
+    await updateDropletBrain()
+  } catch {
+    const failed = { ok: false, changed: false, checked_at: checkedAt, error: 'refresh failed' }
+    writePictureWatch(failed)
+    return failed
+  }
+  noteNewPicture(beforeStamp, loadBrain()?.source?.scanned_at || '')
+  const state = { ok: true, changed: true, checked_at: checkedAt, remote_mtime: remote, pack_at: packAtLabel() }
+  writePictureWatch(state)
+  return state
+}
+
+let pictureTimer = null
+
+function armPictureWatch() {
+  if (pictureTimer) return
+  pictureTimer = setInterval(() => {
+    refreshPictureIfNewer().catch(() => {})
+  }, 30 * 60 * 1000)
+  if (typeof pictureTimer.unref === 'function') pictureTimer.unref()
+}
+
+function latestPackDir() {
+  const packs = path.join(root, 'packs')
+  if (!fs.existsSync(packs)) return ''
+  const names = fs.readdirSync(packs).filter((name) => /^(droplet|windows)-\d{8}-\d{6}$/.test(name))
+  names.sort()
+  return names.length ? path.join(packs, names[names.length - 1]) : ''
+}
+
+function packRel(neuron) {
+  const id = String(neuron?.id || '')
+  if (id === 'memory:book') return 'memories/MEMORY.md'
+  if (id === 'user:book') return 'memories/USER.md'
+  if (id === 'soul:main') return 'SOUL.md'
+  const rel = String(neuron?.path || '').replace(/\\/g, '/')
+  if (rel === 'memories/MEMORY.md' || rel === 'memories/USER.md' || rel === 'SOUL.md') return rel
+  if (/^skills\/(?:[A-Za-z0-9._-]+\/)+SKILL\.md$/.test(rel)) return rel
+  return ''
+}
+
+function lessonFor(neuron) {
+  const rel = packRel(neuron)
+  if (!rel) return ''
+  const pack = latestPackDir()
+  if (!pack) return ''
+  const file = path.resolve(pack, rel)
+  let realPack = ''
+  let realFile = ''
+  try {
+    realPack = fs.realpathSync(path.resolve(pack))
+    realFile = fs.realpathSync(file)
+  } catch {
+    return ''
+  }
+  const relative = path.relative(realPack, realFile)
+  if (!relative || relative.startsWith('..') || path.isAbsolute(relative)) return ''
+  return fs.readFileSync(realFile, 'utf8').slice(0, 80000)
 }
 
 function loadBrain() {
@@ -578,8 +926,160 @@ function stagePlugin() {
   return {
     name: 'hermes-stage',
     configureServer(server) {
+      armPictureWatch()
       server.middlewares.use(async (req, res, next) => {
         const url = new URL(req.url || '/', 'http://127.0.0.1')
+        if (url.pathname === '/api/bot-live') {
+          if (req.method !== 'GET') return sendJson(res, 405, { error: 'GET only' })
+          return sendJson(res, 200, botLiveSince(url.searchParams.get('since')))
+        }
+        if (url.pathname === '/api/bot-chat') {
+          try {
+            if (req.method === 'GET') return sendJson(res, 200, botLiveSince(url.searchParams.get('since')))
+            if (req.method !== 'POST') return sendJson(res, 405, { error: 'GET or POST only' })
+            const payload = JSON.parse(await readBody(req))
+            const saved = addBotChat(payload.from, payload.text)
+            return sendJson(res, saved.status, saved.body)
+          } catch (error) {
+            return sendJson(res, 500, { error: publicError(error) })
+          }
+        }
+        if (url.pathname === '/api/bot-door') {
+          try {
+            if (req.method === 'GET') return sendJson(res, 200, botDoorStatus())
+            if (req.method !== 'POST') return sendJson(res, 405, { error: 'GET or POST only' })
+            return sendJson(res, 200, await openBotTunnel())
+          } catch (error) {
+            return sendJson(res, 500, { error: publicError(error) })
+          }
+        }
+        if (url.pathname === '/api/brain-export' || url.pathname === '/api/brain-export/manifest') {
+          if (req.method !== 'GET') return sendJson(res, 405, { error: 'GET only' })
+          try {
+            const brain = loadBrain()
+            if (!brain) return sendJson(res, 404, { error: 'No picture yet. Press Update picture first.' })
+            const audience = String(url.searchParams.get('for') || 'grok-bot').trim().toLowerCase().slice(0, 40)
+            const bundle = lessonBundle(brain, { lessonFor, acceptedMemory: readAcceptedMemory, for: audience })
+            if (bundle.status !== 200) return sendJson(res, bundle.status || 400, bundle.body || { ok: false, error: 'Unknown bot.' })
+            const packed = bookZip(bundle)
+            if (url.pathname.endsWith('/manifest')) return sendJson(res, 200, packed.manifest)
+            if (packed.zip.length > 2_000_000) return sendJson(res, 413, { error: 'The book pack is too large.' })
+            res.statusCode = 200
+            res.setHeader('content-type', 'application/zip')
+            res.setHeader('content-length', String(packed.zip.length))
+            res.setHeader('cache-control', 'no-store')
+            return res.end(packed.zip)
+          } catch (error) {
+            return sendJson(res, 500, { error: publicError(error) })
+          }
+        }
+        if (url.pathname === '/api/brain-learn') {
+          try {
+            if (req.method === 'GET') {
+              return sendJson(res, 200, {
+                ok: true,
+                note: 'Pending notes only. Ray accepts one into the memory the bots read, or rejects it and the note closes.',
+                proposals: listQueue(learnQueuePath).filter((item) => item.status === 'pending' && item.text),
+              })
+            }
+            if (req.method !== 'POST') return sendJson(res, 405, { error: 'GET or POST only' })
+            const payload = JSON.parse(await readBody(req))
+            const saved = addProposal(learnQueuePath, payload.from, scrubTravelText(payload.text, 800))
+            if (saved.error) return sendJson(res, 400, { ok: false, error: saved.error })
+            return sendJson(res, 200, {
+              ...saved,
+              note: 'Pending. Ray has not accepted this. It is not in her memory.',
+            })
+          } catch (error) {
+            return sendJson(res, 500, { error: publicError(error) })
+          }
+        }
+        if (url.pathname === '/api/brain-learn/accept') {
+          if (req.method !== 'POST') return sendJson(res, 405, { error: 'POST only' })
+          try {
+            const payload = JSON.parse(await readBody(req))
+            const saved = acceptProposal(learnQueuePath, String(payload.id || ''))
+            if (!saved) return sendJson(res, 404, { ok: false, error: 'No proposal with that id.' })
+            if (saved.already) {
+              return sendJson(res, 200, { ok: true, id: saved.id, status: saved.status, memory: false, note: 'That note was already decided.' })
+            }
+            const clean = scrubTravelText(saved.text, 800).trim()
+            const memory = Boolean(clean && clean !== '[held]') && writeAcceptedMemory(saved.from, clean)
+            return sendJson(res, 200, {
+              ok: true,
+              id: saved.id,
+              status: 'accepted',
+              memory,
+              note: memory
+                ? 'Accepted. The bots will read it in memory.'
+                : 'Accepted and closed. Nothing was added to memory.',
+            })
+          } catch (error) {
+            return sendJson(res, 500, { error: publicError(error) })
+          }
+        }
+        if (url.pathname === '/api/brain-learn/reject') {
+          if (req.method !== 'POST') return sendJson(res, 405, { error: 'POST only' })
+          try {
+            const payload = JSON.parse(await readBody(req))
+            const saved = rejectProposal(learnQueuePath, String(payload.id || ''))
+            if (!saved) return sendJson(res, 404, { ok: false, error: 'No proposal with that id.' })
+            return sendJson(res, 200, { ok: true, id: saved.id, status: saved.status, note: 'Rejected. The note is closed.' })
+          } catch (error) {
+            return sendJson(res, 500, { error: publicError(error) })
+          }
+        }
+        if (url.pathname === '/api/bitwarden-queue') {
+          if (req.method !== 'GET') return sendJson(res, 405, { error: 'GET only' })
+          return sendJson(res, 200, {
+            ok: true,
+            note: 'Site and username only. go stays false until Ray approves. Nothing is written to Bitwarden.',
+            items: bitwardenItems(),
+          })
+        }
+        if (url.pathname === '/api/bitwarden-go') {
+          if (req.method !== 'POST') return sendJson(res, 405, { error: 'POST only' })
+          try {
+            const payload = JSON.parse(await readBody(req))
+            const saved = approvePointer(bitwardenQueuePath, String(payload.id || ''))
+            if (!saved) return sendJson(res, 404, { ok: false, error: 'No pointer with that id.' })
+            return sendJson(res, 200, { ok: true, ...saved, note: 'Ray approved the pointer. Nothing was written to Bitwarden.' })
+          } catch (error) {
+            return sendJson(res, 500, { error: publicError(error) })
+          }
+        }
+        if (url.pathname === '/api/picture-watch') {
+          try {
+            if (req.method === 'GET') return sendJson(res, 200, readJsonIf(pictureWatchPath) || { ok: true, changed: false })
+            if (req.method !== 'POST') return sendJson(res, 405, { error: 'GET or POST only' })
+            return sendJson(res, 200, await refreshPictureIfNewer())
+          } catch (error) {
+            return sendJson(res, 500, { error: 'refresh failed' })
+          }
+        }
+        if (url.pathname === '/api/travel') {
+          if (req.method !== 'GET') return sendJson(res, 405, { error: 'GET only' })
+          try {
+            const brain = loadBrain()
+            if (!brain) return sendJson(res, 404, { error: 'No picture yet. Press Update picture first.' })
+            const query = {
+              q: url.searchParams.get('q') || '',
+              lobe: url.searchParams.get('lobe') || '',
+              id: url.searchParams.get('id') || '',
+              offset: url.searchParams.get('offset') || '',
+              limit: url.searchParams.get('limit') || '',
+              learn: url.searchParams.get('learn') || '',
+              for: url.searchParams.get('for') || '',
+              since: url.searchParams.get('since') || '',
+              part: url.searchParams.get('part') || '',
+            }
+            const answer = stampTravel(travelAnswer(brain, query, { lessonFor, acceptedMemory: readAcceptedMemory }))
+            if (answer.status === 200) noteTravel(answer, query)
+            return sendJson(res, answer.status, answer.body)
+          } catch (error) {
+            return sendJson(res, 500, { error: publicError(error) })
+          }
+        }
         if (url.pathname === '/api/explore') {
           try {
             const brain = loadBrain()
@@ -671,6 +1171,7 @@ function stagePlugin() {
           if (req.method !== 'POST') return sendJson(res, 405, { error: 'POST only' })
           if (dropletScan) return sendJson(res, 409, { error: 'Update already running.' })
           try {
+            const beforeStamp = loadBrain()?.source?.scanned_at || ''
             await updateDropletBrain()
             const file = path.join(root, 'public', 'brain.droplet.json')
             const brain = JSON.parse(fs.readFileSync(file, 'utf8'))
@@ -680,6 +1181,7 @@ function stagePlugin() {
             if (!expected || source.host !== expected) {
               return sendJson(res, 500, { error: 'Scan did not come from the server on this PC.' })
             }
+            noteNewPicture(beforeStamp, source.scanned_at || '')
             return sendJson(res, 200, {
               ok: true,
               label: source.label || 'Droplet Hermes',
@@ -844,7 +1346,7 @@ export default defineConfig({
   plugins: [stagePlugin()],
   server: {
     host: '127.0.0.1',
-    port: 5179,
+    port: 5173,
     strictPort: true,
     watch: { ignored: ['**/packs/**'] },
   },
