@@ -1792,7 +1792,10 @@ birthPackButton.addEventListener('click', async () => {
     }
     const bornLine = typeof data.line === 'string' ? data.line.trim() : ''
     sourceLine.textContent = bornLine || 'Born.'
-    if (growthPath && data.dest) growthPath.value = data.dest
+    if (growthPath && data.dest) {
+      growthPath.value = data.dest
+      refreshGrowthInbox()
+    }
     renderMoveReceipt(`Born at ${shownPath(data.dest) || 'the new folder'}.`, data)
     renderHandoff(data.dest, data.note, data.home || previewData.home, previewData)
   } catch (error) {
@@ -1822,12 +1825,17 @@ async function refreshGrowthInbox() {
     const data = await response.json()
     if (!response.ok) throw new Error(data.error || 'Those notes did not open.')
     const notes = Array.isArray(data.notes) ? data.notes : []
+    const kept = Array.isArray(data.kept) ? data.kept : []
     if (!notes.length) {
       const empty = document.createElement('p')
       empty.className = 'aside-note'
       empty.textContent = 'No notes waiting. Another AI writes one file in growth/pending/.'
       growthInbox.append(empty)
-      return
+    } else {
+      const waiting = document.createElement('p')
+      waiting.className = 'aside-note'
+      waiting.textContent = 'Waiting'
+      growthInbox.append(waiting)
     }
     for (const item of notes) {
       const row = document.createElement('p')
@@ -1844,6 +1852,18 @@ async function refreshGrowthInbox() {
       reject.addEventListener('click', () => decideGrowth(item.id, 'reject'))
       row.append(text, document.createTextNode(' '), accept, document.createTextNode(' '), reject)
       growthInbox.append(row)
+    }
+    if (kept.length) {
+      const keptHead = document.createElement('p')
+      keptHead.className = 'aside-note'
+      keptHead.textContent = 'Kept in this folder'
+      growthInbox.append(keptHead)
+      for (const item of kept) {
+        const row = document.createElement('p')
+        row.className = 'aside-note'
+        row.textContent = `${item.from || 'ai'}: ${item.text}`
+        growthInbox.append(row)
+      }
     }
   } catch (error) {
     const line = document.createElement('p')

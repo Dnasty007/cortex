@@ -1,7 +1,7 @@
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
-import { addProposal, acceptProposal, approvePointer, dropIpSites, listQueue, rejectProposal, upsertPointers } from '../src/queues.js'
+import { acceptProposal, acceptedMemoryText, addProposal, approvePointer, dropIpSites, listQueue, rejectProposal, settleProposal, upsertPointers } from '../src/queues.js'
 import { bitwardenPointers, lessonBundle, travelAnswer } from '../src/travel.js'
 import { storeZip } from '../src/zip-store.js'
 
@@ -138,6 +138,17 @@ assert(accepted.status === 'accepted' && accepted.already === false, 'accepting 
 assert(accepted.text === 'Remember the side door.', 'the accepted note keeps its text')
 const againAccept = acceptProposal(learnFile, proposal.id)
 assert(againAccept.already === true, 'accepting twice does not write it again')
+const heldNote = addProposal(learnFile, 'grok', 'password: hunter2secret')
+const closedHeld = settleProposal(learnFile, heldNote.id, '[held]')
+assert(closedHeld.status === 'closed' && closedHeld.keep === false, 'a note with nothing to keep is closed')
+const onceMemory = acceptedMemoryText('', 'grok', 'Remember the side door.', proposal.id)
+const twiceMemory = acceptedMemoryText(onceMemory, 'grok', 'Remember the side door.', proposal.id)
+assert(twiceMemory === onceMemory && onceMemory.includes(`cortex-note: ${proposal.id}`), 'the same note is written once')
+const keepNote = addProposal(learnFile, 'grok', 'Keep the side door.')
+const keptNote = settleProposal(learnFile, keepNote.id, 'Keep the side door.')
+assert(keptNote.status === 'accepted' && keptNote.keep === true, 'a keepable note is accepted once')
+const keptAgain = settleProposal(learnFile, keepNote.id, 'Keep the side door.')
+assert(keptAgain.already === true, 'settling twice does not accept again')
 const pending = addProposal(learnFile, 'water', 'Close this note.')
 const closed = rejectProposal(learnFile, pending.id)
 assert(closed.status === 'closed', 'rejecting a note closes it')
@@ -220,6 +231,12 @@ assert(!calendar.body.hits.some((hit) => hit.id === 'skill:desk'), 'calendar is 
 const stillGrok = travelAnswer(desks, { for: 'grok-bot', limit: '20' })
 assert(stillGrok.body.hits.some((hit) => hit.id === 'skill:desk'), 'the Grok Bot book still has the desk skill')
 assert(!stillGrok.body.hits.some((hit) => hit.name === 'grok-bot-browser-jobs'), 'the jobs skill stays off the Grok Bot book')
+const jobsOpen = travelAnswer(desks, { id: 'skill:jobs/grok-bot-browser-jobs' }, {
+  lessonFor() { return 'Pull the jobs door.' },
+})
+assert(jobsOpen.body.neuron.body === '' && jobsOpen.body.neuron.lesson === false, 'the jobs skill does not open')
+const everySkill = travelAnswer(desks, { learn: 'all', limit: '50' })
+assert(!everySkill.body.hits.some((hit) => hit.name === 'grok-bot-browser-jobs'), 'every skill still leaves the jobs skill closed')
 assert(stillGrok.body.hits.some((hit) => hit.id === 'lesson:cortex-plug-in:grok-bot'), 'the Grok Bot book has the plug-in card')
 assert(!stillGrok.body.hits.some((hit) => hit.name === 'Zebra'), 'the Grok Bot book stays curated')
 const waterPack = lessonBundle(desks, { for: 'water', lessonFor: () => '' })

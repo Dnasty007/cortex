@@ -155,13 +155,18 @@ export function shareFiles(folder) {
     .sort((a, b) => (a.path < b.path ? -1 : a.path > b.path ? 1 : 0))
 }
 
+function sharedBytes(name, data) {
+  if (!String(name).endsWith('.md') && !String(name).endsWith('.mdc')) return data
+  return Buffer.from(scrubTravelText(data.toString('utf8'), 80000), 'utf8')
+}
+
 export function shareZip(folder) {
   if (!isBirthFolder(folder)) throw new Error(NOT_BIRTH)
   const root = folderPath(folder)
   const files = shareFiles(folder).map((file) => {
     const dest = contained(root, file.path)
     if (!dest || !realFile(dest)) throw new Error(NOT_BIRTH)
-    return { name: file.path, data: fs.readFileSync(dest) }
+    return { name: file.path, data: sharedBytes(file.path, fs.readFileSync(dest)) }
   })
   return storeZip(files)
 }
@@ -195,12 +200,19 @@ export function listPending(folder) {
     } catch {
       continue
     }
-    const parsed = parsePending(text)
-    if (!parsed) continue
+    const id = name.slice(0, -'.md'.length)
+    if (!SAFE_ID.test(id)) continue
+    const parsed = parsePending(text) || { from: 'ai', text }
+    let clean = ''
+    try {
+      clean = keptNote(parsed.text)
+    } catch {
+      continue
+    }
     rows.push({
-      id: name.slice(0, -'.md'.length),
-      from: parsed.from.trim().slice(0, 40),
-      text: parsed.text,
+      id,
+      from: cleanFrom(parsed.from),
+      text: clean,
     })
   }
   rows.sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0))
@@ -256,23 +268,125 @@ export function addPending(folder, from, text) {
   return { id, status: 'pending' }
 }
 
-function movePending(folder, id, dirName, status) {
+function scrubbedPending(data) {
+  const text = data.toString('utf8')
+  const parsed = parsePending(text) || { from: 'ai', text }
+  const who = cleanFrom(parsed.from)
+  try {
+    const clean = keptNote(parsed.text)
+    return { keep: true, from: who, raw: Buffer.from(`From: ${who}\n\n${clean}`, 'utf8') }
+  } catch {
+    return { keep: false, from: who, raw: Buffer.from(`From: ${who}\n\n[held]\n`, 'utf8') }
+  }
+}
+
+function rememberKept(root, id) {
+  const dest = contained(root, 'growth/kept.md')
+  if (!dest) throw new Error(NOT_BIRTH)
+  ensureDir(root, 'growth')
+  const prior = realFile(dest) ? fs.readFileSync(dest, 'utf8') : ''
+  if (prior.split(/\r?\n/).some((line) => line.trim() === id)) return
+  const header = 'Kept notes, in order. Read each file under growth/accepted/.\n'
+  const next = prior.trim() ? `${prior.replace(/\s*$/, '')}\n${id}\n` : `${header}\n${id}\n`
+  fs.writeFileSync(dest, next, 'utf8')
+}
+
+function readNoteFile(root, rel) {
+  const file = contained(root, rel)
+  if (!file || !realFile(file)) return null
+  let text = ''
+  try {
+    text = fs.readFileSync(file, 'utf8')
+  } catch {
+    return null
+  }
+  const parsed = parsePending(text) || { from: 'ai', text }
+  let clean = ''
+  try {
+    clean = keptNote(parsed.text)
+  } catch {
+    return null
+  }
+  return { from: cleanFrom(parsed.from), text: clean }
+}
+
+export function listKept(folder) {
+  const root = folderPath(folder)
+  if (!root) return []
+  const order = []
+  const listFile = contained(root, 'growth/kept.md')
+  if (listFile && realFile(listFile)) {
+    let text = ''
+    try {
+      text = fs.readFileSync(listFile, 'utf8')
+    } catch {
+      text = ''
+    }
+    for (const line of text.split(/\r?\n/)) {
+      const id = line.trim()
+      if (SAFE_ID.test(id) && !order.includes(id)) order.push(id)
+    }
+  }
+  const found = new Map()
+  const dir = contained(root, 'growth/accepted')
+  if (dir && isRealDir(dir)) {
+    let names = []
+    try {
+      names = fs.readdirSync(dir)
+    } catch {
+      names = []
+    }
+    for (const name of names) {
+      if (!name.endsWith('.md')) continue
+      const id = name.slice(0, -'.md'.length)
+      if (!SAFE_ID.test(id)) continue
+      const parsed = readNoteFile(root, `growth/accepted/${name}`)
+      if (parsed) found.set(id, parsed)
+    }
+  }
+  const rows = []
+  const seen = new Set()
+  for (const id of order) {
+    const parsed = found.get(id)
+    if (!parsed) continue
+    seen.add(id)
+    rows.push({ id, from: parsed.from, text: parsed.text })
+  }
+  for (const [id, parsed] of found) {
+    if (seen.has(id)) continue
+    rows.push({ id, from: parsed.from, text: parsed.text })
+  }
+  return rows
+}
+
+function movePending(folder, id, dirName, status, scrub) {
   const name = String(id || '')
   if (!SAFE_ID.test(name)) return null
   const root = folderPath(folder)
   if (!root) return null
   const pending = contained(root, `growth/pending/${name}.md`)
-  const destRel = `growth/${dirName}/${name}.md`
-  const dest = contained(root, destRel)
-  if (!pending || !dest || !realFile(pending)) return null
+  if (!pending || !realFile(pending)) return null
   let data
   try {
     data = fs.readFileSync(pending)
   } catch {
     return null
   }
+  let targetDir = dirName
+  let targetStatus = status
+  if (scrub) {
+    const cleaned = scrubbedPending(data)
+    data = cleaned.raw
+    if (!cleaned.keep && status === 'accepted') {
+      targetDir = 'closed'
+      targetStatus = 'closed'
+    }
+  }
+  const destRel = `growth/${targetDir}/${name}.md`
+  const dest = contained(root, destRel)
+  if (!dest) return null
   try {
-    ensureDir(root, `growth/${dirName}`)
+    ensureDir(root, `growth/${targetDir}`)
   } catch {
     return null
   }
@@ -286,16 +400,19 @@ function movePending(folder, id, dirName, status) {
       return null
     }
     if (stat.isSymbolicLink() || !stat.isFile()) return null
+    fs.unlinkSync(pending)
+    return { id: name, status: targetStatus, already: true }
   }
   fs.writeFileSync(finalDest, data)
   fs.unlinkSync(pending)
-  return { id: name, status }
+  if (targetStatus === 'accepted') rememberKept(root, name)
+  return { id: name, status: targetStatus, already: false }
 }
 
 export function acceptPending(folder, id) {
-  return movePending(folder, id, 'accepted', 'accepted')
+  return movePending(folder, id, 'accepted', 'accepted', true)
 }
 
 export function rejectPending(folder, id) {
-  return movePending(folder, id, 'closed', 'closed')
+  return movePending(folder, id, 'closed', 'closed', true)
 }

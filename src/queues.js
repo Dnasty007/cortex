@@ -121,6 +121,39 @@ export function addProposal(file, from, text) {
   return { ok: true, id: item.id, status: 'pending' }
 }
 
+export function acceptedMemoryText(existing, from, text, id) {
+  const clean = String(text || '').trim()
+  const noteId = String(id || '').replace(/[^\w-]/g, '').slice(0, 40)
+  const prior = String(existing || '')
+  if (!clean || !noteId) return prior
+  const marker = `cortex-note: ${noteId}`
+  if (prior.includes(marker)) return prior
+  const who = String(from || 'bot').replace(/[^\w .:-]/g, '').slice(0, 40) || 'bot'
+  const block = `\n\n## Accepted ${new Date().toISOString().slice(0, 10)}\n${marker}\nFrom ${who}\n\n${clean}\n`
+  return `${prior}${block}`
+}
+
+export function settleProposal(file, id, clean) {
+  const data = readQueue(file)
+  const item = data.items.find((row) => row.id === id)
+  if (!item) return null
+  if (item.status !== 'pending') {
+    return { id: item.id, status: item.status, from: item.from || '', text: item.text || '', already: true, keep: false }
+  }
+  const text = String(clean || '').trim()
+  const keep = Boolean(text && text !== '[held]')
+  if (!keep) {
+    item.status = 'closed'
+    item.closed_at = new Date().toISOString()
+    writeQueue(file, data)
+    return { id: item.id, status: 'closed', from: item.from || '', text: item.text || '', already: false, keep: false }
+  }
+  item.status = 'accepted'
+  item.accepted_at = new Date().toISOString()
+  writeQueue(file, data)
+  return { id: item.id, status: 'accepted', from: item.from || '', text: item.text || '', already: false, keep: true }
+}
+
 export function pendingProposal(file, id) {
   const data = readQueue(file)
   const item = data.items.find((row) => row.id === id)

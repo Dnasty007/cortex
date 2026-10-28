@@ -80,6 +80,9 @@ def open_line(kind: str) -> str:
     }.get(kind, "Change into this folder in a terminal, then start the agent from this folder.")
 
 
+READ_GROWTH = "Read GROW.md, then read the files named in growth/kept.md. Those files are in growth/accepted/."
+
+
 def start_text(kind: str) -> str:
     who = START_WHO.get(kind, "the agent")
     return (
@@ -87,20 +90,22 @@ def start_text(kind: str) -> str:
         f"{open_line(kind)}\n"
         "This is a birth, not the live agent.\n"
         "Do not copy these files onto an agent that is already running.\n"
+        f"{READ_GROWTH}\n"
         "Read STOP.json, then BIRTH.md, then the soul, the memory, and the skills.\n"
         "The soul is SOUL.md. Memory is memories/USER.md and memories/MEMORY.md. Each skill is only its SKILL.md.\n"
         "STOP.json does not stop a send, a push, or a delete. Nothing starts itself.\n"
     )
 
 
-GROW = """This folder is a downloaded brain.
+GROW = f"""This folder is a downloaded brain.
 
 Point another AI at this folder. It reads this file, then START.md, then STOP.json, then BIRTH.md, then the soul, the memory, and the skills.
 The soul is SOUL.md. Memory is memories/USER.md and memories/MEMORY.md. Each skill is only its SKILL.md.
 Keys, chats, and jobs stayed in the original folder. Do not copy this folder onto an AI that is already running. Nothing starts itself.
 
+{READ_GROWTH}
 To grow, write one note as a new file in growth/pending/. One note per file. The person accepts or rejects it in Cortex.
-An accepted note is kept in growth/accepted/. Read those after memory. A rejected note is closed. You cannot accept your own note.
+An accepted note is kept in growth/accepted/. The names are listed in growth/kept.md. Read those after memory. A rejected note is closed. You cannot accept your own note.
 Do not edit memories/MEMORY.md. Do not start a job. If a task needs a file that is not here, stop and ask.
 """
 
@@ -187,6 +192,7 @@ def loaded_note(kind: str, titles: set[str], held: list[str], jobs: int, rules_o
         "Cortex note.\n"
         f"{where}\n"
         "This folder is a transplant. Keys, chats, jobs, and config are not here.\n"
+        f"{READ_GROWTH}\n"
         f"Skill titles in this folder: {title_line}.\n"
         "Each skill is only its SKILL.md. Files beside a skill stayed in the original folder. If the task needs one, stop and ask.\n"
         f"Held back: {held_line}. Do not fetch a held title.\n"
@@ -297,6 +303,7 @@ def ask_text(kind: str, titles: set[str], notes: list[str], redactions: int, job
     lines.extend([
         open_line(kind),
         "Do not copy these files into the agent you are already running.",
+        READ_GROWTH,
         "Read STOP.json, then BIRTH.md, then the soul, the memory, and the skills. Open a skill only when its title is the task. Nothing starts itself. There is no loader.",
         "The soul is SOUL.md. Memory is memories/USER.md and memories/MEMORY.md. Each skill is only its SKILL.md.",
         "do_not_schedule names a skill a job used. Do not start that job. You may open that skill when the person names it.",
@@ -425,6 +432,7 @@ Hermes, Claude, Codex, and Cursor each keep their own file names.
 Config, MCP, and chats stay in the original home.
 Do not copy this pack onto a live agent home.
 Read STOP.json, then BIRTH.md, then the soul, the memory, and the skills.
+Read GROW.md, then read the files named in growth/kept.md. Those files are in growth/accepted/.
 The soul is SOUL.md. Memory is memories/USER.md and memories/MEMORY.md. Each skill is only its SKILL.md.
 STOP.json does not stop a send, a push, or a delete.
 A new file under growth/ is growth. The report is not a loader.

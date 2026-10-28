@@ -242,6 +242,10 @@ function isJobsDoorSkill(neuron) {
   return name === 'grok-bot-browser-jobs' || rel.includes('/grok-bot-browser-jobs/') || rel.startsWith('grok-bot-browser-jobs/')
 }
 
+function textOpen(neuron) {
+  return OPEN_BODY.has(String(neuron?.kind || '')) && !isJobsDoorSkill(neuron)
+}
+
 function skillInBook(neuron, bot, neurons) {
   if (bot === 'grok-bot') {
     if (isJobsDoorSkill(neuron)) return false
@@ -329,7 +333,7 @@ export function travelAnswer(brain, query = {}, extras = {}) {
   if (id) {
     const neuron = BOOKS[id] || virtualLesson(neurons, id) || neurons.find((item) => item.id === id)
     if (!neuron) return { status: 404, body: { ok: false, error: 'Not in this picture.' } }
-    const open = OPEN_BODY.has(String(neuron.kind || ''))
+    const open = textOpen(neuron)
     const fuller = open && typeof extras.lessonFor === 'function' ? extras.lessonFor(neuron) : ''
     const sourceText = memoryText(neuron, fuller || neuron.body || '', extras)
     const held = heldLines(sourceText)
@@ -437,13 +441,14 @@ export function travelAnswer(brain, query = {}, extras = {}) {
     if (neuron?.kind === 'hub') continue
     if (book && !frontIds.has(neuron.id) && !skillInBook(neuron, bot, neurons)) continue
     if (wide && !isLibrarySkill(neuron)) continue
+    if (wide && isJobsDoorSkill(neuron)) continue
     if (!book && !wide && hiddenFromSearch(neuron, lobe)) continue
     if (!book && lobe && String(neuron.lobe || '').toLowerCase() !== lobe) continue
     const hay = `${neuron.name || ''} ${neuron.summary || ''} ${neuron.lobe || ''} ${neuron.kind || ''}`.toLowerCase()
     if (!book && q && !BOOKS[neuron.id] && !hay.includes(q)) continue
     const fuller = (book || wide) && typeof extras.lessonFor === 'function' ? extras.lessonFor(neuron) : ''
     const sourceText = memoryText(neuron, fuller || neuron.body || '', extras)
-    const body = OPEN_BODY.has(String(neuron.kind || '')) ? scrubTravelText(sourceText, LESSON_LIMIT) : ''
+    const body = textOpen(neuron) ? scrubTravelText(sourceText, LESSON_LIMIT) : ''
     const held = heldLines(sourceText)
     hits.push({
       id: neuron.id,
@@ -454,7 +459,7 @@ export function travelAnswer(brain, query = {}, extras = {}) {
       hash: lessonHash(body),
       needs_bitwarden: held > 0,
       summary: scrubTravelText(neuron.summary).slice(0, 180),
-      body_open: OPEN_BODY.has(String(neuron.kind || '')),
+      body_open: textOpen(neuron),
       rank: book || wide ? bookRank(neuron) : teachRank(neuron),
     })
   }

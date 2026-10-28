@@ -1,7 +1,7 @@
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
-import { acceptPending, addPending, isBirthFolder, listPending, rejectPending, shareFiles, shareZip } from '../src/brain-share.js'
+import { acceptPending, addPending, isBirthFolder, listKept, listPending, rejectPending, shareFiles, shareZip } from '../src/brain-share.js'
 import { storeZip } from '../src/zip-store.js'
 
 let failed = 0
@@ -110,6 +110,25 @@ try {
   assert(fs.existsSync(path.join(birth, 'growth', 'accepted', `${added.id}.md`)), 'accept moves it to growth/accepted')
   assert(!fs.existsSync(path.join(birth, 'growth', 'pending', `${added.id}.md`)), 'accept removes the pending file')
   assert(fs.readFileSync(path.join(birth, 'memories', 'MEMORY.md')).equals(memoryBytes), 'accept does not change memories/MEMORY.md bytes')
+  const keptList = fs.readFileSync(path.join(birth, 'growth', 'kept.md'), 'utf8')
+  assert(keptList.includes(added.id) && keptList.split(added.id).length === 2, 'accept adds the name to growth/kept.md once')
+  assert(listKept(birth).some((item) => item.id === added.id && item.text.includes('Remember the side door.')), 'kept notes stay in list order')
+  fs.writeFileSync(path.join(birth, 'growth', 'pending', `${added.id}.md`), 'From: ai\n\nA second copy.\n')
+  const again = acceptPending(birth, added.id)
+  assert(again && again.already === true, 'accept does not overwrite a kept note')
+  assert(fs.readFileSync(path.join(birth, 'growth', 'accepted', `${added.id}.md`), 'utf8').includes('Remember the side door.'), 'the kept note stays the first copy')
+  fs.writeFileSync(path.join(birth, 'growth', 'pending', 'abcd1234.md'), 'From: ai\n\nKeep this.\npassword: hunter2secret\n')
+  const scrubbed = acceptPending(birth, 'abcd1234')
+  assert(scrubbed && scrubbed.status === 'accepted', 'a mixed note can be kept')
+  const scrubbedBody = fs.readFileSync(path.join(birth, 'growth', 'accepted', 'abcd1234.md'), 'utf8')
+  assert(scrubbedBody.includes('Keep this.') && !scrubbedBody.includes('hunter2secret'), 'accept stores the scrubbed note')
+  fs.writeFileSync(path.join(birth, 'growth', 'pending', '1234abcd.md'), 'From: ai\n\npassword: hunter2secret\n')
+  assert(!listPending(birth).some((item) => item.id === '1234abcd'), 'a secret note is not listed')
+  const secretClosed = acceptPending(birth, '1234abcd')
+  assert(secretClosed && secretClosed.status === 'closed', 'a secret note is closed')
+  assert(!treeHas(birth, 'hunter2secret'), 'the secret is not kept in the folder')
+  const zipped = shareZip(birth)
+  assert(!zipped.includes(Buffer.from('hunter2secret')), 'the zip does not carry the secret')
 
   const closedNote = addPending(birth, 'ai', 'Close this note.')
   const rejected = rejectPending(birth, closedNote.id)

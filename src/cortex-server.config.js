@@ -6,8 +6,8 @@ import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { defineConfig } from 'vite'
 import { notebookEntries } from './notebook.js'
-import { addProposal, acceptProposal, approvePointer, dropIpSites, listQueue, pendingProposal, rejectProposal, upsertPointers } from './queues.js'
-import { acceptPending, addPending, isBirthFolder, listPending, rejectPending, shareFiles, shareZip } from './brain-share.js'
+import { acceptedMemoryText, addProposal, approvePointer, dropIpSites, listQueue, pendingProposal, rejectProposal, settleProposal, upsertPointers } from './queues.js'
+import { acceptPending, addPending, isBirthFolder, listKept, listPending, rejectPending, shareFiles, shareZip } from './brain-share.js'
 import { lessonBundle, scrubTravelText, travelAnswer } from './travel.js'
 import { lessonFileName, storeZip } from './zip-store.js'
 
@@ -245,13 +245,12 @@ function readAcceptedMemory() {
   }
 }
 
-function writeAcceptedMemory(from, text) {
-  const clean = String(text || '').trim()
-  if (!clean) return false
-  const who = String(from || 'bot').replace(/[^\w .:-]/g, '').slice(0, 40) || 'bot'
-  const block = `\n\n## Accepted ${new Date().toISOString().slice(0, 10)}\nFrom ${who}\n\n${clean}\n`
+function writeAcceptedMemory(from, text, id) {
+  const prior = readAcceptedMemory()
+  const next = acceptedMemoryText(prior, from, text, id)
+  if (next === prior) return prior.includes(`cortex-note: ${String(id || '').replace(/[^\w-]/g, '').slice(0, 40)}`)
   fs.mkdirSync(staging, { recursive: true })
-  fs.appendFileSync(acceptedMemoryPath, block, 'utf8')
+  fs.writeFileSync(acceptedMemoryPath, next, 'utf8')
   return true
 }
 
@@ -972,7 +971,7 @@ function stagePlugin() {
             }
             if (url.pathname === '/api/shared-brain/notes') {
               if (req.method !== 'GET') return sendJson(res, 405, { error: 'GET only' })
-              return sendJson(res, 200, { ok: true, notes: listPending(folder) })
+              return sendJson(res, 200, { ok: true, notes: listPending(folder), kept: listKept(folder) })
             }
             if (url.pathname === '/api/shared-brain/grow') {
               if (req.method !== 'POST') return sendJson(res, 405, { error: 'POST only' })
@@ -1056,19 +1055,21 @@ function stagePlugin() {
               return sendJson(res, 200, { ok: true, id: saved.id, status: saved.status, memory: false, note: 'That note was already decided.' })
             }
             const clean = scrubTravelText(saved.text, 800).trim()
-            const memory = Boolean(clean && clean !== '[held]') && writeAcceptedMemory(saved.from, clean)
-            const marked = acceptProposal(learnQueuePath, saved.id)
-            if (!marked || marked.already) {
-              return sendJson(res, 200, { ok: true, id: saved.id, status: marked?.status || saved.status, memory: false, note: 'That note was already decided.' })
+            const keepable = Boolean(clean && clean !== '[held]')
+            if (keepable) writeAcceptedMemory(saved.from, clean, saved.id)
+            const marked = settleProposal(learnQueuePath, saved.id, keepable ? clean : '')
+            if (!marked) return sendJson(res, 404, { ok: false, error: 'No proposal with that id.' })
+            if (marked.already) {
+              return sendJson(res, 200, { ok: true, id: saved.id, status: marked.status, memory: false, note: 'That note was already decided.' })
             }
             return sendJson(res, 200, {
               ok: true,
               id: saved.id,
-              status: 'accepted',
-              memory,
-              note: memory
+              status: marked.status,
+              memory: marked.keep === true,
+              note: marked.keep
                 ? 'Accepted. The bots will read it in memory.'
-                : 'Accepted and closed. Nothing was added to memory.',
+                : 'Closed. Nothing was added to memory.',
             })
           } catch (error) {
             return sendJson(res, 500, { error: publicError(error) })
