@@ -18,6 +18,9 @@ stop: STOP.json
 manifest: manifest.json
 birth: BIRTH.md
 grow: GROW.md
+handoff: HERMES-HANDOFF.md
+handoff.path: the brain root
+handoff.optional: only present when the source agent had a handoff file
 
 layout.notes: Each skill copy is only SKILL.md. Files beside a skill stay in the source. memory files are copied only when the source folder has them. cortex_pack.py packs skills from the folder it is given.
 
@@ -29,13 +32,13 @@ applies_to: every text file in the brain
 json_key: cortex
 fields: type, skill, brain-region, version, date, dependencies
 type: skill, memory, growth, growth-index, soul, rule, stop, ask, guide, gate, query, or file
-skill: skill name, or empty
+skill: the skill name on a skill file. An empty string on every non-skill file.
 brain-region: temporal-l, temporal-r, frontal-l, frontal-r, parietal-l, parietal-r, occipital, corpus, cerebellum, or brainstem
 version: 1
 date: YYYY-MM-DD
 dependencies: comma-separated skill names in a text header. A JSON array under cortex.dependencies. Empty when there are none.
 
-header.regions: memories/MEMORY.md is temporal-l. memories/USER.md is temporal-r. A growth note is temporal-l. A skill is frontal-l or frontal-r. Categories are sorted. Even indexes are frontal-l. Odd indexes are frontal-r. SOUL.md, CLAUDE.md, and AGENTS.md are corpus. STOP.json, ASK.json, BIRTH.md, and GROW.md are brainstem.
+header.regions: memories/MEMORY.md is temporal-l. memories/USER.md is temporal-r. A growth note is temporal-l. A skill is frontal-l or frontal-r. Categories are sorted. The category index is zero-based. Even indexes are frontal-l. Odd indexes are frontal-r. SOUL.md, CLAUDE.md, and AGENTS.md are corpus. STOP.json, ASK.json, BIRTH.md, and GROW.md are brainstem.
 
 header.example:
 
@@ -59,6 +62,7 @@ format: cortex-pack-2
 checksum: sha256 of the file bytes, lowercase hex, 64 characters
 manifest_checksum: none. The manifest is the index. It is not listed inside itself.
 
+neuron: one entry in manifest.files. A skill, a memory file, a growth note, or a brainstem file is one neuron.
 manifest.files[]: path, bytes, sha256, redactions, type, skill, brain-region, version, date, dependencies
 manifest.regions[]: id, files
 manifest.skills[]: name, path, sha256, brain-region, version, date, dependencies, description
@@ -72,11 +76,17 @@ manifest.notes: description is the skill description after redaction, clipped to
 ## builders
 
 portable: cortex_pack.py
+portable.role: builder only. It does not install.
+portable.command: python cortex_pack.py <skills-folder>
 portable.pack: unsealed. Checksums and headers. No pattern_sha256. No contract.
 portable.place: refused. Place will not install this pack.
 sealed: scanner/pack_brain.py
+sealed.role: sealed builder and installer
+sealed.build: python scanner/pack_brain.py --home <home> --out <pack>
 sealed.pack: adds pattern_sha256 and contract so the pack passes Place install checks
-sealed.place: accepted
+place: python scanner/pack_brain.py --pack <pack> --dest <empty-folder>
+place.dest: the destination must be empty
+sealed.place: accepted when the destination is empty and the pack is sealed
 query: brain-query.mjs
 query.packs: portable or sealed. Readers use brain-query.mjs on either.
 
@@ -114,10 +124,10 @@ stop.format: cortex-stop-1
 stop.loader: false
 stop.stops_tools: false
 stop.effect: STOP.json does not stop a send, a push, or a delete. It does not stop a tool. It tells the agent to stop and ask first.
-stop.read_order: Read STOP.json, then BIRTH.md, then the soul, the memory, and the skills.
-redaction.secret: api keys, secrets, passwords, tokens, bearer tokens, private keys, and known key prefixes are replaced with [redacted]
-redaction.email: replaced with [email]
-redaction.phone: replaced with [phone]
+stop.read_order: Read STOP.json, then BIRTH.md, then GROW.md, then HERMES-HANDOFF.md, then the soul, the memory, and the skills. HERMES-HANDOFF.md is optional and is present only when the source agent had a handoff file.
+redaction.secret: api keys, secrets, passwords, tokens, bearer tokens, private keys, and known key prefixes are replaced with `[redacted]`
+redaction.email: replaced with `[email]`
+redaction.phone: replaced with `[phone]`
 redaction.names: a file name that matches those patterns is not copied as itself
 redaction.proof: a clean pattern match is not proof that every secret was found
 refuse.live: do not install into a folder that already looks like an agent home
