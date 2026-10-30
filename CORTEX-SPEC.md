@@ -20,10 +20,14 @@ growth_dirs.present: all three directories are always present in a pack
 growth_dirs.creator: both builders create them if they are absent
 growth_dirs.birth: empty at birth. Neither builder writes notes into them. The receiving agent writes the notes.
 kept: growth/kept.md
+kept.portable: cortex_pack.py writes growth/kept.md with a cortex header and the line "Kept notes, in order. Read each file under growth/accepted/." It is listed in manifest.files.
+kept.sealed: scanner/pack_brain.py does not write growth/kept.md.
+kept.format: after a human accepts a note, one id per line, oldest first.
 stop: STOP.json
 ask: ASK.json
 ask.path: the brain root
-ask.optional: ASK.json is the canonical store of questions. The agent reads ASK.json. ASK.md is not required for loading.
+ask.optional: ASK.json is the canonical store of questions when the sealed builder writes it. The agent reads ASK.json. ASK.md is not required for loading. cortex_pack.py does not write ASK.json.
+ask.schema: a JSON object with keys advice, for, format, held, home, instruction_files, jobs_left_behind, lines_stripped, loader, rules_only, skill_titles, titles_more, and cortex. format is the string cortex-ask-1. voice is present when a voice line was found. There is no questions array.
 manifest: manifest.json
 birth: BIRTH.md
 birth.path: the brain root
@@ -65,7 +69,8 @@ version: 1
 date: YYYY-MM-DD
 dependencies: comma-separated skill names in a text header. A JSON array under cortex.dependencies. Empty when there are none.
 
-frontmatter.order: if YAML frontmatter is present, that block starts on line one. The cortex fence comes after its closing ---. If a file has no frontmatter, the cortex fence may open on line one. The packer places it after the first line when that line has to stay first.
+frontmatter.order: if YAML frontmatter is present, that block starts on line one. The cortex fence comes after its closing ---. A file that starts with the line "Cortex note." keeps that note through the first blank line, and the fence follows the blank line. Every other file with no frontmatter gets the fence after its first line. A one-line file gets a newline, then the fence.
+header.code: the :::cortex fence is for markdown and plain text. brain-query.mjs receives that same fence. It is not rewritten as a JavaScript comment. JSON cards and gate files carry the fields under the cortex key instead of a text fence.
 
 header.regions: memories/MEMORY.md is temporal-l. memories/USER.md is temporal-r. A growth note is temporal-l. A skill is frontal-l or frontal-r. Categories are sorted. The category index is zero-based. Even indexes are frontal-l. Odd indexes are frontal-r. SOUL.md, CLAUDE.md, and AGENTS.md are corpus. STOP.json, ASK.json, BIRTH.md, GROW.md, and HERMES-HANDOFF.md are brainstem.
 
@@ -92,7 +97,7 @@ checksum: sha256 of the file bytes, lowercase hex, 64 characters
 manifest_checksum: none. The manifest is the index.
 manifest.self: manifest.json does not list itself.
 
-neuron: any entry in manifest.files is one neuron. That includes a skill, a memory file, a growth note, a soul file, a brainstem file, and HERMES-HANDOFF.md when that file is present.
+neuron: a file present in the pack at build time that appears in manifest.files. A growth note written after birth is not a neuron. It is tracked only in manifest.growth.pending or manifest.growth.accepted.
 manifest.files[]: path, bytes, sha256, redactions, type, skill, brain-region, version, date, dependencies
 manifest.regions[]: id, files
 manifest.skills[]: name, path, sha256, brain-region, version, date, dependencies, description
@@ -107,10 +112,12 @@ contract: a string on a sealed pack. The SHA-256 hex digest of the contract body
 contract.body: one JSON object, serialized with keys sorted, separators comma and colon, and non-ASCII kept as characters. No trailing newline.
 contract.body.keys: files, home, jobs_left_behind, pattern_sha256, read
 contract.files: each manifest.files entry contributes path, bytes, and sha256 only, in the order those entries already have. The list is not sorted again.
-contract.home: manifest.home
-contract.jobs_left_behind: manifest.jobs_left_behind, or 0 when that value is missing
-contract.read: manifest.read
-pattern_sha256: the SHA-256 hex digest of the canonical pattern list. It is an input inside the contract body. It is not a hash of the contract body.
+contract.home: the sealed builder writes a home kind: hermes, claude, cursor, agents, or skills. It is not a filesystem path. A portable pack has no contract body, so it has no home value there.
+contract.jobs_left_behind: an integer count of jobs left in the source, or 0. It is not a list of paths.
+contract.read: the string full-file
+contract.spaces: no space after a comma or a colon
+contract.unicode: non-ASCII characters stay as characters. They are not escaped as uXXXX sequences.
+pattern_sha256: the SHA-256 hex digest of the secret pattern, the email pattern, and the phone pattern, in that order, joined by newlines. The list is not sorted. This digest is an input inside the contract body. It is not a hash of the contract body. Place compares it to the local pattern lock. A mismatch refuses the install.
 contract.same: two sealed packs match when their file order, path, bytes, sha256, home, jobs_left_behind, pattern_sha256, and read match. Place rejects a contract string that is not the digest of that body.
 contract.growth: the contract body does not include the growth lists. Rewriting those lists does not change the contract.
 
@@ -181,7 +188,9 @@ growth.create: the receiving agent writes the notes. The builder does not.
 manifest.snapshot: manifest.files[] is the snapshot taken at build time. Each sha256 is the file bytes at that build. Growth does not rewrite those rows.
 manifest.growth: when Cortex saves, accepts, or rejects a note, it rewrites manifest.growth.pending and manifest.growth.accepted. It does not list growth/closed. That rewrite does not change the contract body.
 checksum.scope: the checksum check covers the files that were in the pack at build time
-checksum.install: Place checks every packed file. If any file's bytes do not match its manifest sha256, Place refuses the install and writes nothing. It does not skip the file and continue.
+checksum.install: Place checks every file listed in manifest.files. A listed file that is missing or has mismatched bytes refuses the install, and Place writes nothing. It does not log and skip that file.
+place.extra_pack: a file in the pack that is absent from manifest.files is not installed and does not refuse Place. A growth note written after the build is in that group when it is not in manifest.files.
+place.extra_dest: the destination must be empty. An extra file already in the destination refuses the install.
 
 ## handoff
 
@@ -194,7 +203,7 @@ fields: last_grok, itch, last_awake
 last_grok: string. The last Grok job id that touched the brain. Not a live session.
 itch: string. The open itch id.
 last_awake: string. The UTC timestamp the source agent last ran. Format YYYY-MM-DDTHH:MM:SSZ.
-lines_after: standing rules may follow the three fields. They are not extra keys.
+lines_after: standing rules may follow the three fields as plain lines. They are not extra keys and they do not carry a cortex header.
 
 handoff.example:
 
@@ -217,10 +226,11 @@ stop.read_order: Read STOP.json, then ASK.json, then BIRTH.md, then GROW.md, the
 read.ask: immediately after STOP.json. The read order names ASK.json only. ASK.md is not part of loading.
 read.soul: soul files sorted alphabetically. AGENTS.md, then CLAUDE.md, then SOUL.md, for the files that are present.
 read.memory: memories/MEMORY.md before memories/USER.md.
+read.skills: skills are read in the order they appear in manifest.files.
 redaction.secret: api keys, secrets, passwords, tokens, bearer tokens, private keys, and known key prefixes are replaced with `[redacted]`
 redaction.email: replaced with `[email]`
 redaction.phone: replaced with `[phone]`
-redaction.names: a file name that matches those patterns is not copied as itself
+redaction.names: a path part that matches those patterns is renamed to redacted- plus the first 8 hex characters of the SHA-256 of that part. The file is still copied.
 redaction.proof: a clean pattern match is not proof that every secret was found
 refuse.live: do not install into a folder that already looks like an agent home
 refuse.inside: do not install into a folder inside a live agent home
@@ -228,5 +238,19 @@ refuse.beside: do not install into a folder beside a live agent home
 refuse.empty: the destination must be empty
 refuse.root: do not use a drive root
 live.markers: SOUL.md, memories/USER.md, memories/MEMORY.md, CLAUDE.md, AGENTS.md, a skills directory, config.yaml, a profiles directory, .claude, .cursor, .agents, .hermes, or a secret-shaped file name
+live.check: Place checks the destination folder itself, every parent up to the drive root, and the destination's immediate siblings.
+live.exempt: a sibling is not treated as a live home when it contains manifest.json with format cortex-pack-2 and a BIRTH.md file, and it has no secret-shaped name. The destination itself is not exempt.
+live.secret: a secret-shaped name is one of auth.json, .env, .env.local, credentials.json, client_secret.json, secrets.json, or id_ed25519.
 source: read only. The source folder is not modified.
 start: nothing in the pack starts itself
+
+## open questions
+
+frontmatter.first_line: answered above. The packer does not leave this choice open.
+category.sort: categories are sorted with Unicode case folding. The order is not locale-dependent. Even indexes are frontal-l. Odd indexes are frontal-r. The index is zero-based.
+date.format: YYYY-MM-DD, the UTC day of the pack
+dependencies.syntax: comma-separated skill names in a text header. A JSON array under cortex.dependencies.
+redactions.format: an integer on each manifest.files entry. It counts secret, email, and phone replacements in that file.
+handoff.rules: standing rules are plain lines after the three fields. They do not carry a cortex header.
+growth.collision: the writer draws a new 8-hex id when that file already exists, and it tries up to 5 draws. It does not overwrite an existing note.
+birth.mismatch: Place refuses the install and writes nothing. It does not log the mismatch and skip the file.
