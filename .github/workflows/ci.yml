@@ -1,0 +1,33 @@
+name: ci
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: checkout
+        uses: actions/checkout@v4
+
+      - name: set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: install Python dependencies
+        run: pip install -r requirements.txt
+
+      - name: run pack tests
+        run: python scanner/pack_brain_test.py
+
+      - name: set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: check brain-query.mjs parses
+        run: node --check scripts/brain-query.mjs
