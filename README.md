@@ -1,6 +1,6 @@
 # Cortex
 
-Cortex is a portable brain format for AI agents — a folder any model can load cold that carries skills, memory, safety rules, and a growth loop where only a human approves changes.
+Cortex is a portable brain format for AI agents — a folder any model can load code that carries skills, memory, safety rules, and a growth loop where only a human approves changes.
 
 Every agent session today starts from zero, and switching providers means re-explaining everything. Cortex makes the brain the artifact, not the conversation.
 
