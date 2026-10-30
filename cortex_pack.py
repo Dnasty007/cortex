@@ -30,6 +30,7 @@ from pack_brain import (  # noqa: E402
     is_drive_root,
     is_under,
     PackError,
+    ensure_growth_dirs,
     looks_like_home,
     normalized_text,
     record_text,
@@ -169,8 +170,7 @@ def write_pack(source: Path, dest: Path) -> dict:
             })
         kept_body = "Kept notes, in order. Read each file under growth/accepted/.\n"
         kept, kept_row = record_text("growth/kept.md", kept_body, regions, date)
-        (dest / "growth" / "pending").mkdir(parents=True, exist_ok=True)
-        (dest / "growth" / "accepted").mkdir(parents=True, exist_ok=True)
+        ensure_growth_dirs(dest)
         (dest / "growth" / "kept.md").write_text(kept, encoding="utf-8", newline="\n")
         files.append(kept_row)
         birth, birth_row = record_text("BIRTH.md", BIRTH, regions, date)

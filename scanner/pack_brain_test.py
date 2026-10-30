@@ -181,6 +181,13 @@ class PackTests(unittest.TestCase):
         self.assertTrue((self.dest / "BIRTH.md").is_file())
         self.assertTrue((self.dest / "manifest.json").is_file())
         self.assertTrue((self.dest / "skills" / "general" / "demo" / "SKILL.md").is_file())
+        for name in ("pending", "accepted", "closed"):
+            packed = self.out / "growth" / name
+            placed = self.dest / "growth" / name
+            self.assertTrue(packed.is_dir())
+            self.assertTrue(placed.is_dir())
+            self.assertEqual(list(packed.iterdir()), [])
+            self.assertEqual(list(placed.iterdir()), [])
 
     def test_install_refuses_a_changed_job_count(self) -> None:
         build_pack(self.home, self.out, "Fixture")
