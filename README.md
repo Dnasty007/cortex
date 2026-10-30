@@ -26,7 +26,7 @@ cd pack-here
 python ..\cortex\cortex_pack.py <skills-folder>
 ```
 
-`requirements.txt` installs nothing. The Python code uses the standard library only. `<skills-folder>` is a folder that contains at least one `SKILL.md`. The pack is written in `pack-here` because the clone contains a `skills` directory, and a pack folder created inside it is refused.
+`requirements.txt` installs nothing. The Python code uses the standard library only. `<skills-folder>` is a folder that contains at least one `SKILL.md`. The pack is written in `pack-here` because the clone contains a `skills` directory, and a pack folder created inside it is refused. Run the pack command from outside the clone, because the clone itself contains a skills directory and cortex_pack.py will refuse a pack folder created inside it.
 
 Cortex is for teams running agents across Claude, Grok, Kimi, and others who need one shared source of truth. It is for robotics builders who want a robot's learned state to transfer between machines. It is for anyone who treats an agent's memory as something worth versioning.
 
