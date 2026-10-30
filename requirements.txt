@@ -1,0 +1,1 @@
+# No third-party dependencies. scanner and cortex_pack.py use the Python standard library only.
