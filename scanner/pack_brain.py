@@ -30,7 +30,7 @@ SKIP_NAME = re.compile(r"(?i)(auth\.json|\.env$|credential|google_token|client_s
 FORMAT = "cortex-pack-2"
 MAX_BYTES = 1_500_000
 MEMORY_FILES = ("memories/USER.md", "memories/MEMORY.md", "SOUL.md")
-GENERATED = {"BIRTH.md", "START.md", "GROW.md", "ASK.md", "ASK.json", "STOP.json"}
+GENERATED = {"BIRTH.md", "START.md", "GROW.md", "ASK.md", "ASK.json", "STOP.json", "brain-query.mjs"}
 REQUIRED = {"BIRTH.md"}
 GROWTH_ROOT = "growth"
 SECRET_MARKS = {
@@ -107,6 +107,12 @@ Keys, chats, and jobs stayed in the original folder. Do not copy this folder ont
 To grow, write one note as a new file in growth/pending/. One note per file. The person accepts or rejects it in Cortex.
 An accepted note is kept in growth/accepted/. The names are listed in growth/kept.md. Read those after memory. A rejected note is closed. You cannot accept your own note.
 Do not edit memories/MEMORY.md. Do not start a job. If a task needs a file that is not here, stop and ask.
+
+Each text file has a cortex header. JSON cards keep the same fields under the key cortex.
+STOP.json does not stop a send, a push, or a delete.
+manifest.json lists every region, every skill, and every file in growth/pending and growth/accepted. Each file has a sha256.
+To list files, run node brain-query.mjs . "show me everything in temporal updated after 2026-10-01"
+The script prints a JSON list of paths and headers. It does not print file bodies. It does not accept a note.
 """
 
 
@@ -244,6 +250,186 @@ def strip_note(text: str) -> str:
     return text
 
 
+HEADER_OPEN = ":::cortex\n"
+HEADER_CLOSE = "\n:::\n"
+
+
+def strip_header(text: str) -> str:
+    start = text.find(HEADER_OPEN)
+    if start == -1 or start > 4000:
+        return text
+    end = text.find(HEADER_CLOSE, start)
+    if end == -1:
+        return text
+    return text[:start] + text[end + len(HEADER_CLOSE) :]
+
+
+def packed_source(text: str, loaded: bool) -> str:
+    body = strip_note(text) if loaded else text
+    return strip_header(body)
+
+
+def one_label(value: object) -> str:
+    label = " ".join(str(value or "").split())[:80]
+    if not label or SECRET.search(label) or EMAIL.search(label) or PHONE.search(label) or residue(label):
+        return ""
+    return label
+
+
+def skill_category(posix: str) -> str:
+    parts = posix.split("/")
+    if "skills" not in parts:
+        return ""
+    rest = parts[parts.index("skills") + 1 :]
+    if len(rest) >= 3 and rest[-1] == "SKILL.md":
+        return rest[0] or "general"
+    if rest and rest[-1] == "SKILL.md":
+        return "general"
+    return ""
+
+
+def category_regions(paths: list[str]) -> dict[str, str]:
+    seen: list[str] = []
+    for posix in paths:
+        name = skill_category(posix)
+        if name and name not in seen:
+            seen.append(name)
+    seen.sort(key=str.casefold)
+    return {name: ("frontal-l" if index % 2 == 0 else "frontal-r") for index, name in enumerate(seen)}
+
+
+def related_skills(text: str) -> list[str]:
+    raw = ""
+    if text.startswith("---"):
+        end = text.find("\n---", 3)
+        if end != -1:
+            raw = text[3:end]
+    match = re.search(r"related_skills:\s*\[(.*?)\]", raw, re.S)
+    if not match:
+        return []
+    found: list[str] = []
+    for part in match.group(1).split(","):
+        label = one_label(part.strip().strip("\"'"))
+        if label and label not in found:
+            found.append(label)
+        if len(found) >= 6:
+            break
+    return found
+
+
+def cortex_fields(posix: str, text: str, regions: dict[str, str], date: str) -> dict:
+    skill = ""
+    deps: list[str] = []
+    if posix.endswith("/SKILL.md"):
+        kind = "skill"
+        skill = one_label(skill_title(text, Path(posix))) or "redacted title"
+        region = regions.get(skill_category(posix), "frontal-l")
+        deps = related_skills(text)
+    elif posix == "memories/MEMORY.md":
+        kind, region = "memory", "temporal-l"
+    elif posix == "memories/USER.md":
+        kind, region = "memory", "temporal-r"
+    elif posix in {"SOUL.md", "CLAUDE.md", "AGENTS.md"}:
+        kind, region = "soul", "corpus"
+    elif posix.startswith(".cursor/rules/"):
+        kind, region = "rule", "parietal-l"
+    elif posix == "STOP.json":
+        kind, region = "stop", "brainstem"
+    elif posix in {"ASK.json", "ASK.md"}:
+        kind, region = "ask", "brainstem"
+    elif posix in {"START.md", "GROW.md", "BIRTH.md", "INSTALL.txt"}:
+        kind, region = "guide", "brainstem"
+    elif posix == "brain-query.mjs":
+        kind, region = "query", "brainstem"
+    elif posix == "growth/kept.md":
+        kind, region = "growth-index", "temporal-l"
+    elif posix.startswith("growth/"):
+        kind, region = "growth", "temporal-l"
+    elif posix in set(GATE_REL.values()):
+        kind, region = "gate", "brainstem"
+    else:
+        kind, region = "file", "corpus"
+    return {
+        "type": kind,
+        "skill": skill,
+        "brain-region": region,
+        "version": "1",
+        "date": date,
+        "dependencies": deps,
+    }
+
+
+def render_header(meta: dict) -> str:
+    deps = meta.get("dependencies") or []
+    dep_text = ", ".join(str(item) for item in deps) if isinstance(deps, list) else str(deps)
+    lines = [
+        ":::cortex",
+        f"type: {meta.get('type') or 'file'}",
+        f"skill: {meta.get('skill') or ''}",
+        f"brain-region: {meta.get('brain-region') or 'corpus'}",
+        f"version: {meta.get('version') or '1'}",
+        f"date: {meta.get('date') or ''}",
+        f"dependencies: {dep_text}",
+        ":::",
+        "",
+    ]
+    return "\n".join(lines)
+
+
+def insert_header(text: str, meta: dict) -> str:
+    if text.startswith(HEADER_OPEN) or HEADER_OPEN in text[:500]:
+        return text
+    block = render_header(meta)
+    if text.startswith("---"):
+        end = text.find("\n---", 3)
+        if end != -1:
+            insert_at = end + 4
+            if insert_at < len(text) and text[insert_at] == "\n":
+                insert_at += 1
+            return text[:insert_at] + block + text[insert_at:]
+    if text.startswith("Cortex note.\n"):
+        mark = text.find("\n\n")
+        if mark != -1:
+            return text[: mark + 2] + block + text[mark + 2 :]
+    newline = text.find("\n")
+    if newline == -1:
+        return (text + "\n" if text else "") + block
+    return text[: newline + 1] + block + text[newline + 1 :]
+
+
+def stamp_meta(record: dict, meta: dict) -> dict:
+    record["type"] = meta["type"]
+    record["skill"] = meta["skill"]
+    record["brain-region"] = meta["brain-region"]
+    record["version"] = meta["version"]
+    record["date"] = meta["date"]
+    record["dependencies"] = list(meta["dependencies"])
+    return record
+
+
+def record_text(posix: str, text: str, regions: dict[str, str], date: str, redactions: int = 0) -> tuple[str, dict]:
+    meta = cortex_fields(posix, text, regions, date)
+    sealed = posix.endswith(".json") or posix in set(GATE_REL.values())
+    headed = text if sealed else insert_header(text, meta)
+    if residue(headed):
+        raise PackError("A header still matches the secret pattern.")
+    data = headed.encode("utf-8")
+    return headed, stamp_meta(
+        {
+            "path": posix,
+            "bytes": len(data),
+            "sha256": byte_hash(data),
+            "redactions": redactions,
+        },
+        meta,
+    )
+
+
+def query_script() -> str:
+    path = Path(__file__).resolve().parents[1] / "scripts" / "brain-query.mjs"
+    return path.read_text(encoding="utf-8")
+
+
 def restamp_loaded(out: Path, kind: str, files: list[dict], note: str) -> None:
     if residue(note):
         raise PackError("The loaded note still matches the secret pattern.")
@@ -344,7 +530,7 @@ def ask_text(kind: str, titles: set[str], notes: list[str], redactions: int, job
     return "\n".join(lines)
 
 
-def ask_card(kind: str, titles: set[str], notes: list[str], redactions: int, jobs: int, rules_only: bool = False, held: list[str] | None = None, voice: str = "") -> str:
+def ask_card(kind: str, titles: set[str], notes: list[str], redactions: int, jobs: int, rules_only: bool = False, held: list[str] | None = None, voice: str = "", cortex: dict | None = None) -> str:
     who = START_WHO.get(kind, "the agent")
     shown: list[str] = []
     for title in titles:
@@ -377,13 +563,15 @@ def ask_card(kind: str, titles: set[str], notes: list[str], redactions: int, job
     }
     if voice:
         payload["voice"] = voice
+    if cortex:
+        payload["cortex"] = cortex
     text = json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True) + "\n"
     if residue(text):
         raise PackError("The ask card still matches the secret pattern.")
     return text
 
 
-def stop_card(kind: str, holes: list[dict], jobs: int, rules_only: bool, held: list[str], scheduled: list[str]) -> str:
+def stop_card(kind: str, holes: list[dict], jobs: int, rules_only: bool, held: list[str], scheduled: list[str], cortex: dict | None = None) -> str:
     who = START_WHO.get(kind, "the agent")
     shown_holes = []
     for item in holes[:80]:
@@ -413,6 +601,8 @@ def stop_card(kind: str, holes: list[dict], jobs: int, rules_only: bool, held: l
         "stops_tools": False,
         "rules_only": bool(rules_only),
     }
+    if cortex:
+        payload["cortex"] = cortex
     text = json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True) + "\n"
     if residue(text):
         raise PackError("The stop card still matches the secret pattern.")
@@ -787,6 +977,8 @@ def build_pack(home: Path, out: Path, label: str, rules_only: bool = False, hold
         holes: list[dict] = []
         voice = ""
         standing = {"hermes": "SOUL.md", "claude": "CLAUDE.md", "cursor": "AGENTS.md", "agents": "AGENTS.md"}.get(kind, "")
+        pack_date = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        regions = category_regions([item[1].as_posix() for item in planned])
         for source, rel in planned:
             if SKIP_NAME.search(source.name):
                 skipped.append({"path": rel.as_posix(), "reason": "secret-shaped name"})
@@ -800,7 +992,6 @@ def build_pack(home: Path, out: Path, label: str, rules_only: bool = False, hold
             if residue(text):
                 raise PackError("A file still had a secret or a contact after stripping.")
             posix = rel.as_posix()
-            data = text.encode("utf-8")
             if rules_only and posix in {"memories/USER.md", "memories/MEMORY.md"}:
                 skipped.append({"path": posix, "reason": "memory stayed behind"})
                 continue
@@ -816,7 +1007,8 @@ def build_pack(home: Path, out: Path, label: str, rules_only: bool = False, hold
                     skipped.append({"path": posix, "reason": "held back"})
                     continue
                 titles.add(title)
-            write_file(out, rel, text)
+            headed, row = record_text(posix, text, regions, pack_date, sum(file_counts.values()))
+            write_file(out, rel, headed)
             add_counts(counts, file_counts)
             if any(file_counts.values()):
                 holes.append({
@@ -829,12 +1021,7 @@ def build_pack(home: Path, out: Path, label: str, rules_only: bool = False, hold
                 voice = voice_line(source.read_text(encoding="utf-8"))
             if posix in INSTRUCTION_FILES or (posix.startswith(".cursor/rules/") and posix.endswith((".md", ".mdc"))):
                 notes.append(posix)
-            files.append({
-                "path": rel.as_posix(),
-                "bytes": len(data),
-                "sha256": byte_hash(data),
-                "redactions": sum(file_counts.values()),
-            })
+            files.append(row)
 
         if not files:
             raise PackError("Nothing safe to pack.")
@@ -851,75 +1038,51 @@ def build_pack(home: Path, out: Path, label: str, rules_only: bool = False, hold
                     scheduled.append(label_text)
         scheduled.sort(key=str.casefold)
         restamp_loaded(out, kind, files, loaded_note(kind, titles, held_shown, left_behind, rules_only))
-        ask = ask_text(kind, titles, notes, sum(counts.values()), left_behind, rules_only, held_shown, voice)
+        ask, ask_row = record_text("ASK.md", ask_text(kind, titles, notes, sum(counts.values()), left_behind, rules_only, held_shown, voice), regions, pack_date)
         write_file(out, Path("ASK.md"), ask)
-        ask_bytes = ask.encode("utf-8")
-        card = ask_card(kind, titles, notes, sum(counts.values()), left_behind, rules_only, held_shown, voice)
+        ask_meta = cortex_fields("ASK.json", "", regions, pack_date)
+        card = ask_card(kind, titles, notes, sum(counts.values()), left_behind, rules_only, held_shown, voice, ask_meta)
         write_file(out, Path("ASK.json"), card)
-        card_bytes = card.encode("utf-8")
-        files.insert(0, {
+        files.insert(0, stamp_meta({
             "path": "ASK.json",
-            "bytes": len(card_bytes),
-            "sha256": byte_hash(card_bytes),
+            "bytes": len(card.encode("utf-8")),
+            "sha256": byte_hash(card.encode("utf-8")),
             "redactions": 0,
-        })
-        files.insert(1, {
-            "path": "ASK.md",
-            "bytes": len(ask_bytes),
-            "sha256": byte_hash(ask_bytes),
-            "redactions": 0,
-        })
+        }, ask_meta))
+        files.insert(1, ask_row)
 
-        start = start_text(kind)
+        start, start_row = record_text("START.md", start_text(kind), regions, pack_date)
         write_file(out, Path("START.md"), start)
-        start_bytes = start.encode("utf-8")
-        files.insert(2, {
-            "path": "START.md",
-            "bytes": len(start_bytes),
-            "sha256": byte_hash(start_bytes),
-            "redactions": 0,
-        })
-        if residue(GROW):
-            raise PackError("GROW.md still matches the secret pattern.")
-        write_file(out, Path("GROW.md"), GROW)
-        grow_bytes = GROW.encode("utf-8")
-        files.insert(3, {
-            "path": "GROW.md",
-            "bytes": len(grow_bytes),
-            "sha256": byte_hash(grow_bytes),
-            "redactions": 0,
-        })
-        stop = stop_card(kind, holes, left_behind, rules_only, held_shown, scheduled)
+        files.insert(2, start_row)
+        grow, grow_row = record_text("GROW.md", GROW, regions, pack_date)
+        write_file(out, Path("GROW.md"), grow)
+        files.insert(3, grow_row)
+        stop_meta = cortex_fields("STOP.json", "", regions, pack_date)
+        stop = stop_card(kind, holes, left_behind, rules_only, held_shown, scheduled, stop_meta)
         write_file(out, Path("STOP.json"), stop)
-        stop_bytes = stop.encode("utf-8")
-        files.insert(0, {
+        files.insert(0, stamp_meta({
             "path": "STOP.json",
-            "bytes": len(stop_bytes),
-            "sha256": byte_hash(stop_bytes),
+            "bytes": len(stop.encode("utf-8")),
+            "sha256": byte_hash(stop.encode("utf-8")),
             "redactions": 0,
-        })
+        }, stop_meta))
         gate = gate_body(kind)
         if gate:
             if residue(gate):
                 raise PackError("The tool file still matches the secret pattern.")
             rel = Path(GATE_REL[kind])
+            _gate_text, gate_row = record_text(rel.as_posix(), gate, regions, pack_date)
             write_file(out, rel, gate)
-            gate_bytes = gate.encode("utf-8")
-            files.append({
-                "path": rel.as_posix(),
-                "bytes": len(gate_bytes),
-                "sha256": byte_hash(gate_bytes),
-                "redactions": 0,
-            })
+            files.append(gate_row)
 
-        birth = BIRTH.encode("utf-8")
-        write_file(out, Path("BIRTH.md"), BIRTH)
-        files.append({
-            "path": "BIRTH.md",
-            "bytes": len(birth),
-            "sha256": byte_hash(birth),
-            "redactions": 0,
-        })
+        birth, birth_row = record_text("BIRTH.md", BIRTH, regions, pack_date)
+        write_file(out, Path("BIRTH.md"), birth)
+        files.append(birth_row)
+        query_meta = cortex_fields("brain-query.mjs", "", regions, pack_date)
+        query = "/*\n" + render_header(query_meta) + "*/\n" + query_script()
+        _query_text, query_row = record_text("brain-query.mjs", query, regions, pack_date)
+        write_file(out, Path("brain-query.mjs"), query)
+        files.append(query_row)
 
         shown_label, _label_counts = scrub((label or "")[:80] or "Hermes")
         if residue(shown_label) or not shown_label.strip():
@@ -942,9 +1105,29 @@ def build_pack(home: Path, out: Path, label: str, rules_only: bool = False, hold
             "redactions": counts,
             "note": "The source home was not modified. At install, the bytes are checked. The pattern does not prove every secret was found.",
         }
+        region_files: dict[str, list[str]] = {}
+        for item in files:
+            region_files.setdefault(str(item.get("brain-region") or "corpus"), []).append(str(item.get("path") or ""))
+        manifest["regions"] = [{"id": key, "files": region_files[key]} for key in sorted(region_files)]
+        manifest["skills"] = [
+            {
+                "name": item.get("skill") or "",
+                "path": item.get("path") or "",
+                "sha256": item.get("sha256") or "",
+                "brain-region": item.get("brain-region") or "",
+                "version": item.get("version") or "1",
+                "date": item.get("date") or "",
+                "dependencies": item.get("dependencies") or [],
+            }
+            for item in files
+            if item.get("type") == "skill"
+        ]
+        manifest["growth"] = {"pending": [], "accepted": []}
+        manifest["query"] = 'node brain-query.mjs . "show me everything in temporal updated after YYYY-MM-DD"'
         manifest["contract"] = contract_hash(manifest)
         write_file(out, Path("manifest.json"), json.dumps(manifest, ensure_ascii=False, indent=2) + "\n")
-        write_file(out, Path("INSTALL.txt"), INSTALL)
+        install_text, _install_row = record_text("INSTALL.txt", INSTALL, regions, pack_date)
+        write_file(out, Path("INSTALL.txt"), install_text)
         return manifest
     except Exception:
         shutil.rmtree(out, ignore_errors=True)
@@ -956,7 +1139,7 @@ def allowed_install_rel(rel: str) -> bool:
     if not safe_rel(path):
         return False
     text = path.as_posix()
-    if text in ("memories/USER.md", "memories/MEMORY.md", "SOUL.md", "BIRTH.md", "START.md", "GROW.md", "ASK.md", "ASK.json", "STOP.json", "CLAUDE.md", "AGENTS.md"):
+    if text in ("memories/USER.md", "memories/MEMORY.md", "SOUL.md", "BIRTH.md", "START.md", "GROW.md", "ASK.md", "ASK.json", "STOP.json", "CLAUDE.md", "AGENTS.md", "brain-query.mjs"):
         return True
     if text.startswith("skills/") and text.endswith("/SKILL.md"):
         return True
@@ -1004,7 +1187,7 @@ def read_pack_files(pack: Path, manifest: dict) -> list[tuple[str, bytes]]:
         expected = str(item.get("sha256") or "")
         if not re.fullmatch(r"[0-9a-f]{64}", expected) or byte_hash(data) != expected or len(data) != item.get("bytes"):
             raise PackError("A pack file does not match its manifest hash.")
-        if rel == "BIRTH.md" and data != BIRTH.encode("utf-8"):
+        if rel == "BIRTH.md" and strip_header(data.decode("utf-8")) != BIRTH:
             raise PackError("BIRTH.md does not match the birth text this program requires.")
         if rel in set(GATE_REL.values()):
             expected = gate_body(str(manifest.get("home") or ""))
@@ -1280,20 +1463,17 @@ def verify_pack(folder: Path, home: Path | None = None) -> dict:
             rel = str(item.get("path") or "")
             if not rel or rel in GENERATED:
                 continue
-            expected = str(item.get("sha256") or "")
             if rel not in live_map:
                 gone.append(rel)
                 continue
-            if loads_on_open(kind_now, rel):
-                packed_path = folder / rel
-                try:
-                    packed_body = strip_note(packed_path.read_text(encoding="utf-8")).encode("utf-8")
-                except OSError:
-                    changed.append(rel)
-                    continue
-                if byte_hash(packed_body) != live_map[rel]:
-                    changed.append(rel)
-            elif live_map[rel] != expected:
+            packed_path = folder / rel
+            try:
+                packed_text = packed_path.read_text(encoding="utf-8")
+                packed_body = packed_source(packed_text, loads_on_open(kind_now, rel)).encode("utf-8")
+            except OSError:
+                changed.append(rel)
+                continue
+            if byte_hash(packed_body) != live_map[rel]:
                 changed.append(rel)
         stale = len(changed) + len(gone)
         stale_files = (changed + gone)[:80]
@@ -1413,7 +1593,7 @@ def load_birth(path: Path) -> tuple[dict, Path]:
     sealed = str(manifest.get("contract") or "")
     if not re.fullmatch(r"[0-9a-f]{64}", sealed) or sealed != contract_hash(manifest):
         raise PackError("The pack manifest does not match its packing list.")
-    if (path / "BIRTH.md").read_bytes() != BIRTH.encode("utf-8"):
+    if strip_header((path / "BIRTH.md").read_text(encoding="utf-8")) != BIRTH:
         raise PackError("BIRTH.md does not match the birth text this program requires.")
     return manifest, path
 
