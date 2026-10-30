@@ -133,7 +133,7 @@ class PackTests(unittest.TestCase):
         self.assertIn("brain-region: corpus", (self.out / "SOUL.md").read_text(encoding="utf-8"))
         self.assertIn("brain-region: temporal-l", (self.out / "memories" / "MEMORY.md").read_text(encoding="utf-8"))
         self.assertIn("brain-region: temporal-r", (self.out / "memories" / "USER.md").read_text(encoding="utf-8"))
-        skill = next((self.out / "skills").rglob("SKILL.md"))
+        skill = self.out / "skills" / "general" / "demo" / "SKILL.md"
         skill_text = skill.read_text(encoding="utf-8")
         self.assertIn("type: skill", skill_text)
         self.assertIn("skill: demo", skill_text)
