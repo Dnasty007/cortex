@@ -1,80 +1,25 @@
 # Cortex
 
-Canonical spec: [CORTEX-SPEC.md](CORTEX-SPEC.md).
+Cortex is a portable brain format for AI agents — a folder any model can load cold that carries skills, memory, safety rules, and a growth loop where only a human approves changes.
 
-Portable builder: `python cortex_pack.py <skills-folder>`. Use it to pack any skills folder into an unsealed `cortex-pack` in the current directory. It writes checksums and headers, prints the neuron count, skill count, and regions, and does not change the source folder. It refuses a live agent folder. Place refuses this pack.
+Every agent session today starts from zero, and switching providers means re-explaining everything. Cortex makes the brain the artifact, not the conversation.
 
-Sealed builder: Build in the app, or `scanner/pack_brain.py`. Use it when the pack must pass Place. It adds `pattern_sha256` and `contract`.
+Build packs a source folder into a sealed or portable brain with SHA-256 checksums and redacted secrets. Birth is the first-load ritual: the receiving agent verifies every file listed in the manifest, confirms STOP was read, and states that nothing starts itself. Growth lets the agent propose memory changes as notes with a From line. A human accepts or rejects each note, so the brain compounds without anyone hand-editing the memory files.
 
-Read either pack with `node brain-query.mjs`.
-
-You get a new folder that a new agent opens. Keys and chats stay in the original folder. Nothing starts itself.
-
-Hermes, Claude, Cursor, and Codex each keep their own file names. The new agent reads a Cortex note in the file it already loads.
-
-## Price
-
-$0.99 once.
-
-[Pay $0.99 with PayPal](https://www.paypal.me/RLC007/0.99USD)
-
-## If you already use an AI
-
-Paste that AI's folder, then press Build and Birth. Cortex downloads its brain into a new folder. Keys, chats, and jobs stay in the original folder.
-
-Point your other AIs at the new folder. The file they already open tells them to read GROW.md, then the notes listed in growth/kept.md. While Cortex is open on this PC, they can download that same brain from `GET /api/shared-brain/download?path=` the folder, and read one file from `GET /api/shared-brain?path=` the folder `&file=` the file. They can leave a note in growth/pending/. You accept or reject that note in Cortex. An accepted note stays in growth/accepted/ and its name is added to growth/kept.md. The brain grows. The original AI is not changed. Nothing starts itself.
-
-Each text file in that folder carries a cortex header: type, skill, brain-region, version, date, and dependencies. JSON cards keep those same fields under the key cortex. `manifest.json` lists every region, every skill, and every file in `growth/pending` and `growth/accepted`, with a SHA-256 for each file. A receiving agent can list one slice without reading the whole pack:
+`cortex_pack.py` builds a portable unsealed pack you can hand to anyone. Place will not install that pack. `scanner/pack_brain.py` builds a sealed pack that passes the Place installer. Place refuses a tampered file, a destination that already has files, and a folder that looks like a live agent home. A sibling is exempt when it is itself a Cortex brain: `manifest.json` format `cortex-pack-2`, a `BIRTH.md`, and no secret-shaped name. Finished brains can sit beside each other.
 
 ```bat
-node brain-query.mjs . "show me everything in temporal updated after 2026-10-01"
+python cortex_pack.py <skills-folder>
+python scanner/pack_brain.py --home <home> --out <pack>
+python scanner/pack_brain.py --pack <pack> --dest <empty-folder>
 ```
 
-The script prints a JSON list of paths and headers. It does not print file bodies.
+Cortex is for teams running agents across Claude, Grok, Kimi, and others who need one shared source of truth. It is for robotics builders who want a robot's learned state to transfer between machines. It is for anyone who treats an agent's memory as something worth versioning.
 
-## What you need
+`cortex-spec-1` is frozen at tag `cortex-spec-1` on main. It survived cold reads from Claude, Grok, Hermes, and Kimi K2 — twenty-two gaps found and resolved across multiple rounds. The open-questions section lists the remaining known limitations honestly rather than hiding them.
 
-- Windows
-- Node.js
-- Python 3
+The canonical document is [CORTEX-SPEC.md](CORTEX-SPEC.md). `scanner/pack_brain.py` is the sealed builder and installer. `cortex_pack.py` is the portable builder. [scripts/brain-query.mjs](scripts/brain-query.mjs) lists paths and headers from a brain without printing file bodies. A sealed pack also writes that script at the brain root. The tests include [scanner/pack_brain_test.py](scanner/pack_brain_test.py). The Windows desktop app is a separate surface: a Three.js view of a brain for people who want to see it. `npm install` then `npm run dev` opens it at http://localhost:5173.
 
-## Run
-
-```bat
-npm install
-npm run dev
-```
-
-Open http://localhost:5173
-
-`start.bat` does the same thing. If a Hermes home is already on this PC, it scans `%LOCALAPPDATA%\hermes` into a local file and then opens the page. That scan stays on your PC.
-
-## The buttons
-
-**Build** copies skills and rules into a pack on this PC. The original folder is not changed.
-
-**Birth** writes that pack into a new empty folder. Nothing starts. Do not paste the new folder into the agent that is already open.
-
-**Place** writes into an empty folder you already have. The first press shows the list. The second press writes. A live agent folder is refused, and so is a folder inside one or next to one.
-
-**Check** reads the packing list and writes nothing.
-
-**Compare** names skills that match, differ, or sit on only one side. It does not merge the folders and it does not copy skill text.
-
-## What stays behind
-
-Keys, chats, jobs, and config stay in the original folder. Phone numbers, email addresses, and secret-shaped lines are stripped from the copy. Each skill copy is only `SKILL.md`. Files beside a skill stay behind. If a task needs one of those, stop and ask.
-
-Nothing in the new folder stops a send, a push, or a delete. The note tells the agent to stop and ask a person first.
-
-## The picture
-
-The picture reviews a Hermes folder. It is not the move. Drag to turn it.
-
-The page looks for `public/brain-model.glb`. If that file is absent, it draws a simple shape. Do not publish `public/brain.*.json`. A scan can contain names from the folder you pointed it at.
-
-A server scan is optional. Put `user@host` on the first line of `.hermes-host`. That file is not part of this repo.
-
-## License
+Contributions and issues go through the spec first. The format is the contract, and code follows it.
 
 Copyright Ray. All rights reserved. See [LICENSE](LICENSE).
