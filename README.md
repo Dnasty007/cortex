@@ -1,5 +1,13 @@
 # Cortex
 
+Canonical spec: [CORTEX-SPEC.md](CORTEX-SPEC.md).
+
+Portable builder: `python cortex_pack.py <skills-folder>`. Use it to pack any skills folder into an unsealed `cortex-pack` in the current directory. It writes checksums and headers, prints the neuron count, skill count, and regions, and does not change the source folder. It refuses a live agent folder. Place refuses this pack.
+
+Sealed builder: Build in the app, or `scanner/pack_brain.py`. Use it when the pack must pass Place. It adds `pattern_sha256` and `contract`.
+
+Read either pack with `node brain-query.mjs`.
+
 You get a new folder that a new agent opens. Keys and chats stay in the original folder. Nothing starts itself.
 
 Hermes, Claude, Cursor, and Codex each keep their own file names. The new agent reads a Cortex note in the file it already loads.
