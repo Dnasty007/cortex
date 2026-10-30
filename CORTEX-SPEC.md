@@ -23,12 +23,12 @@ kept: growth/kept.md
 stop: STOP.json
 ask: ASK.json
 ask.path: the brain root
-ask.optional: holds questions the agent should ask the human before acting
+ask.optional: ASK.json is the canonical store of questions. The agent reads ASK.json. ASK.md is not required for loading.
 manifest: manifest.json
 birth: BIRTH.md
 birth.path: the brain root
 birth.role: the birth ritual
-birth.first_load: verify the manifest checksums, confirm STOP.json was read, and state that nothing starts itself
+birth.first_load: verify every sha256 in manifest.files[] against the actual file bytes on disk, confirm STOP.json was read, and state that nothing starts itself. The manifest itself has no self-checksum and is not verified.
 grow: GROW.md
 grow.path: the brain root
 grow.role: growth instructions
@@ -39,7 +39,7 @@ handoff.optional: only present when the source agent had a handoff file
 handoff.region: brainstem
 handoff.header: a cortex header
 ask_text: ASK.md
-ask_text.role: the questions in ASK.json, written as text. scanner/pack_brain.py writes this file. cortex_pack.py does not.
+ask_text.role: a human-readable rendering of the questions in ASK.json, for display. scanner/pack_brain.py writes this file. cortex_pack.py does not write ASK.md. The read order names ASK.json only.
 start: START.md
 start.role: how to point the agent at this folder. scanner/pack_brain.py writes this file. cortex_pack.py does not.
 install: INSTALL.txt
@@ -102,6 +102,17 @@ manifest.jobs: []
 manifest.profiles: []
 
 manifest.notes: description is the skill description after redaction, clipped to 200 characters. Which extra manifest fields exist depends on the builder. See builders.
+
+contract: a string on a sealed pack. The SHA-256 hex digest of the contract body. A portable pack omits it.
+contract.body: one JSON object, serialized with keys sorted, separators comma and colon, and non-ASCII kept as characters. No trailing newline.
+contract.body.keys: files, home, jobs_left_behind, pattern_sha256, read
+contract.files: each manifest.files entry contributes path, bytes, and sha256 only, in the order those entries already have. The list is not sorted again.
+contract.home: manifest.home
+contract.jobs_left_behind: manifest.jobs_left_behind, or 0 when that value is missing
+contract.read: manifest.read
+pattern_sha256: the SHA-256 hex digest of the canonical pattern list. It is an input inside the contract body. It is not a hash of the contract body.
+contract.same: two sealed packs match when their file order, path, bytes, sha256, home, jobs_left_behind, pattern_sha256, and read match. Place rejects a contract string that is not the digest of that body.
+contract.growth: the contract body does not include the growth lists. Rewriting those lists does not change the contract.
 
 ## builders
 
@@ -168,7 +179,7 @@ growth.mutable: after a pack is sealed, growth/pending, growth/accepted, and gro
 growth.dirs: both builders create empty growth/pending, growth/accepted, and growth/closed if they are absent. Neither builder writes notes into them. Place creates the same three directories if they are absent.
 growth.create: the receiving agent writes the notes. The builder does not.
 manifest.snapshot: manifest.files[] is the snapshot taken at build time. Each sha256 is the file bytes at that build. Growth does not rewrite those rows.
-manifest.growth: when Cortex saves, accepts, or rejects a note, it rewrites manifest.growth.pending and manifest.growth.accepted. It does not list growth/closed. The contract hash covers files[], not the growth lists, so that rewrite does not break the seal.
+manifest.growth: when Cortex saves, accepts, or rejects a note, it rewrites manifest.growth.pending and manifest.growth.accepted. It does not list growth/closed. That rewrite does not change the contract body.
 checksum.scope: the checksum check covers the files that were in the pack at build time
 checksum.install: Place checks every packed file. If any file's bytes do not match its manifest sha256, Place refuses the install and writes nothing. It does not skip the file and continue.
 
@@ -196,9 +207,14 @@ last_awake: 2026-10-18T08:26:00Z
 stop.format: cortex-stop-1
 stop.loader: false
 stop.stops_tools: false
-stop.effect: STOP.json does not stop a send, a push, or a delete. It does not stop a tool. It tells the agent to stop and ask first.
+stop.schema: a JSON object
+stop.keys: cortex, do_not_schedule, for, format, gate, held, holes, jobs_left_behind, loader, refuse, rules_only, stops_tools
+stop.cortex: an object with type, skill, brain-region, version, date, and dependencies
+stop.gate: an object with file, binds, and does_not
+stop.refuse: the instruction string to the agent. There is no message key.
+stop.effect: STOP.json does not stop a send, a push, or a delete. It does not stop a tool. The refuse string tells the agent to stop and ask first.
 stop.read_order: Read STOP.json, then ASK.json, then BIRTH.md, then GROW.md, then HERMES-HANDOFF.md, then the soul files, then the memory files, then the skills. ASK.json is optional. HERMES-HANDOFF.md is optional and is present only when the source agent had a handoff file.
-read.ask: immediately after STOP.json. It holds questions the agent should ask the human before acting.
+read.ask: immediately after STOP.json. The read order names ASK.json only. ASK.md is not part of loading.
 read.soul: soul files sorted alphabetically. AGENTS.md, then CLAUDE.md, then SOUL.md, for the files that are present.
 read.memory: memories/MEMORY.md before memories/USER.md.
 redaction.secret: api keys, secrets, passwords, tokens, bearer tokens, private keys, and known key prefixes are replaced with `[redacted]`
