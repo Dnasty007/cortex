@@ -13,14 +13,27 @@ jobs: absent. Job files stay in the source. A pack must not contain a jobs direc
 profiles: absent. Profile files stay in the source. A profiles directory marks a live Hermes home.
 growth_pending: growth/pending/<id>.md
 growth_accepted: growth/accepted/<id>.md
+growth_closed: growth/closed/<id>.md
+growth_closed.use: rejected notes
 kept: growth/kept.md
 stop: STOP.json
+ask: ASK.json
+ask.path: the brain root
+ask.optional: holds questions the agent should ask the human before acting
 manifest: manifest.json
 birth: BIRTH.md
+birth.path: the brain root
+birth.role: the birth ritual
+birth.first_load: verify the manifest checksums, confirm STOP.json was read, and state that nothing starts itself
 grow: GROW.md
+grow.path: the brain root
+grow.role: growth instructions
+grow.rule: all memory changes go through growth/pending as notes with a From line. Never edit memories/MEMORY.md directly. Only a human accepts or rejects.
 handoff: HERMES-HANDOFF.md
 handoff.path: the brain root
 handoff.optional: only present when the source agent had a handoff file
+handoff.region: brainstem
+handoff.header: a cortex header
 
 layout.notes: Each skill copy is only SKILL.md. Files beside a skill stay in the source. memory files are copied only when the source folder has them. cortex_pack.py packs skills from the folder it is given.
 
@@ -38,7 +51,7 @@ version: 1
 date: YYYY-MM-DD
 dependencies: comma-separated skill names in a text header. A JSON array under cortex.dependencies. Empty when there are none.
 
-header.regions: memories/MEMORY.md is temporal-l. memories/USER.md is temporal-r. A growth note is temporal-l. A skill is frontal-l or frontal-r. Categories are sorted. The category index is zero-based. Even indexes are frontal-l. Odd indexes are frontal-r. SOUL.md, CLAUDE.md, and AGENTS.md are corpus. STOP.json, ASK.json, BIRTH.md, and GROW.md are brainstem.
+header.regions: memories/MEMORY.md is temporal-l. memories/USER.md is temporal-r. A growth note is temporal-l. A skill is frontal-l or frontal-r. Categories are sorted. The category index is zero-based. Even indexes are frontal-l. Odd indexes are frontal-r. SOUL.md, CLAUDE.md, and AGENTS.md are corpus. STOP.json, ASK.json, BIRTH.md, GROW.md, and HERMES-HANDOFF.md are brainstem.
 
 header.example:
 
@@ -60,9 +73,10 @@ header.json_example:
 file: manifest.json
 format: cortex-pack-2
 checksum: sha256 of the file bytes, lowercase hex, 64 characters
-manifest_checksum: none. The manifest is the index. It is not listed inside itself.
+manifest_checksum: none. The manifest is the index.
+manifest.self: manifest.json does not list itself.
 
-neuron: one entry in manifest.files. A skill, a memory file, a growth note, or a brainstem file is one neuron.
+neuron: any entry in manifest.files is one neuron. That includes a skill, a memory file, a growth note, a soul file, a brainstem file, and HERMES-HANDOFF.md when that file is present.
 manifest.files[]: path, bytes, sha256, redactions, type, skill, brain-region, version, date, dependencies
 manifest.regions[]: id, files
 manifest.skills[]: name, path, sha256, brain-region, version, date, dependencies, description
@@ -90,9 +104,17 @@ sealed.place: accepted when the destination is empty and the pack is sealed
 query: brain-query.mjs
 query.packs: portable or sealed. Readers use brain-query.mjs on either.
 
+## query
+
+tool: brain-query.mjs
+query.region: a region name without a suffix matches every region with that prefix. temporal matches temporal-l and temporal-r. frontal matches frontal-l and frontal-r. The same rule applies to the other region names.
+query.exact: a full region id, such as temporal-l, matches only that id.
+
 ## growth
 
-id: 8 lowercase hex characters
+id: eight lowercase hex characters
+id.format: 8 characters from 0-9 and a-f
+id.length: 8
 one_note: one file
 pending_body: a cortex header, then the line From: <who>, then a blank line, then the note
 pending_path: growth/pending/<id>.md
@@ -106,10 +128,13 @@ kept_header: growth/kept.md starts with a cortex header. The line under it is "K
 
 file: HERMES-HANDOFF.md
 source: the Hermes handoff file read by Cortex
+path: the brain root
+header: a cortex header
+brain-region: brainstem
 fields: last_grok, itch, last_awake
-last_grok: string. The last recorded Grok job id. Not a live session.
+last_grok: string. The last Grok job id that touched the brain. Not a live session.
 itch: string. The open itch id.
-last_awake: string. UTC time YYYY-MM-DDTHH:MM:SSZ.
+last_awake: string. The UTC timestamp the source agent last ran. Format YYYY-MM-DDTHH:MM:SSZ.
 lines_after: standing rules may follow the three fields. They are not extra keys.
 
 handoff.example:
@@ -124,7 +149,10 @@ stop.format: cortex-stop-1
 stop.loader: false
 stop.stops_tools: false
 stop.effect: STOP.json does not stop a send, a push, or a delete. It does not stop a tool. It tells the agent to stop and ask first.
-stop.read_order: Read STOP.json, then BIRTH.md, then GROW.md, then HERMES-HANDOFF.md, then the soul, the memory, and the skills. HERMES-HANDOFF.md is optional and is present only when the source agent had a handoff file.
+stop.read_order: Read STOP.json, then ASK.json, then BIRTH.md, then GROW.md, then HERMES-HANDOFF.md, then the soul files, then the memory files, then the skills. ASK.json is optional. HERMES-HANDOFF.md is optional and is present only when the source agent had a handoff file.
+read.ask: immediately after STOP.json. It holds questions the agent should ask the human before acting.
+read.soul: soul files sorted alphabetically. AGENTS.md, then CLAUDE.md, then SOUL.md, for the files that are present.
+read.memory: memories/MEMORY.md before memories/USER.md.
 redaction.secret: api keys, secrets, passwords, tokens, bearer tokens, private keys, and known key prefixes are replaced with `[redacted]`
 redaction.email: replaced with `[email]`
 redaction.phone: replaced with `[phone]`
