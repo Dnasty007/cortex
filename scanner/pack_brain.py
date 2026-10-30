@@ -802,15 +802,33 @@ def pattern_lock_path() -> Path:
 def pattern_lock_hash() -> str:
     path = pattern_lock_path()
     if not path.is_file() or path.is_symlink():
-        raise PackError("The pattern lock is not on this computer.")
+        raise PackError(f"The pattern lock is not on this computer: {path}")
     token = path.read_text(encoding="utf-8").strip().split()
     held = token[0] if token else ""
     if not re.fullmatch(r"[0-9a-f]{64}", held):
-        raise PackError("The pattern lock is not a hash.")
+        raise PackError(f"The pattern lock is not a hash: {path}")
     live = byte_hash(pattern_text().encode("utf-8"))
     if held != live:
-        raise PackError("The pattern on this computer does not match the pattern lock.")
+        raise PackError(f"The pattern on this computer does not match the pattern lock: {path}")
     return held
+
+
+def init_lock() -> dict:
+    path = pattern_lock_path()
+    digest = byte_hash(pattern_text().encode("utf-8"))
+    if path.is_symlink():
+        raise PackError(f"The pattern lock is a link: {path}")
+    if path.is_file():
+        token = path.read_text(encoding="utf-8").strip().split()
+        held = token[0] if token else ""
+        if held == digest:
+            return {"ok": True, "path": str(path), "wrote": False}
+        raise PackError(f"The pattern lock already exists and does not match: {path}")
+    if path.exists():
+        raise PackError(f"The pattern lock path is not a file: {path}")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(digest + "\n", encoding="utf-8", newline="\n")
+    return {"ok": True, "path": str(path), "wrote": True}
 
 
 def assert_pattern_frozen() -> None:
@@ -1687,9 +1705,12 @@ def main() -> None:
     parser.add_argument("--kin", nargs=2, metavar=("LEFT", "RIGHT"))
     parser.add_argument("--rules-only", action="store_true")
     parser.add_argument("--hold", action="append", default=[])
+    parser.add_argument("--init-lock", action="store_true")
     args = parser.parse_args()
     try:
-        if args.kin:
+        if args.init_lock:
+            result = init_lock()
+        elif args.kin:
             result = kin_report(Path(args.kin[0]), Path(args.kin[1]))
         elif args.receipt:
             pack = Path(args.receipt)

@@ -34,8 +34,16 @@ handoff.path: the brain root
 handoff.optional: only present when the source agent had a handoff file
 handoff.region: brainstem
 handoff.header: a cortex header
+ask_text: ASK.md
+ask_text.role: the questions in ASK.json, written as text. scanner/pack_brain.py writes this file. cortex_pack.py does not.
+start: START.md
+start.role: how to point the agent at this folder. scanner/pack_brain.py writes this file. cortex_pack.py does not.
+install: INSTALL.txt
+install.role: the install note. Place copies it beside the brain. scanner/pack_brain.py writes this file. cortex_pack.py does not.
+query_script: brain-query.mjs
+query_script.role: lists paths and headers. It does not print file bodies. scanner/pack_brain.py writes this file. cortex_pack.py does not.
 
-layout.notes: Each skill copy is only SKILL.md. Files beside a skill stay in the source. memory files are copied only when the source folder has them. cortex_pack.py packs skills from the folder it is given.
+layout.notes: Each skill copy is only SKILL.md. Files beside a skill stay in the source. memory files are copied only when the source folder has them. cortex_pack.py packs skills from the folder it is given. scanner/pack_brain.py may also write ASK.md, START.md, INSTALL.txt, and brain-query.mjs.
 
 ## header
 
@@ -46,6 +54,8 @@ json_key: cortex
 fields: type, skill, brain-region, version, date, dependencies
 type: skill, memory, growth, growth-index, soul, rule, stop, ask, guide, gate, query, or file
 skill: the skill name on a skill file. An empty string on every non-skill file.
+empty.skill: an empty skill field is the line `skill: ` with one trailing space. That trailing space means the field is present and empty. A missing skill line means the field is absent.
+empty.dependencies: an empty dependencies field is the line `dependencies: ` with one trailing space. That trailing space means the field is present and empty. A missing dependencies line means the field is absent.
 brain-region: temporal-l, temporal-r, frontal-l, frontal-r, parietal-l, parietal-r, occipital, corpus, cerebellum, or brainstem
 version: 1
 date: YYYY-MM-DD
@@ -120,6 +130,23 @@ generated: STOP.json, BIRTH.md, and GROW.md
 generated.by: cortex_pack.py and scanner/pack_brain.py
 generated.rule: both packers write these three files into the pack. They do not read them from the source. A missing source copy is not an error. Neither packer fails for that, and neither packer names a missing file.
 
+## pattern lock
+
+tool: scanner/pack_brain.py
+required: before a build or an install
+path: ~/.cortex/pattern.lock
+override: the CORTEX_PATTERN_LOCK environment variable, when it is set, replaces that path
+line: one line. The SHA-256 hex digest of the canonical pattern list.
+pattern_list: the secret pattern, the email pattern, and the phone pattern in scanner/pack_brain.py, joined by newlines
+missing: the program exits with an error that names the lock path
+mismatch: the program exits with an error that names the lock path
+init: python scanner/pack_brain.py --init-lock
+init.writes: the hash of the pattern list in this repo, at the lock path
+init.present: if that file already holds the same hash, it is left in place. If it holds a different hash, the program exits and does not overwrite it.
+issuer: Ray issues the lock for his machines
+public.reference: the hash --init-lock writes from this repo. That hash is the public reference.
+portable: cortex_pack.py does not read the pattern lock
+
 ## growth
 
 id: eight lowercase hex characters
@@ -134,6 +161,8 @@ agent_accept: refused. The receiving agent cannot accept its own note.
 memory_file: do not edit memories/MEMORY.md to grow. Write a pending note instead.
 kept_header: growth/kept.md starts with a cortex header. The line under it is "Kept notes, in order. Read each file under growth/accepted/." Then one id per line.
 growth.mutable: after a pack is sealed, growth/pending, growth/accepted, and growth/closed may change
+growth.dirs: scanner/pack_brain.py does not create growth/pending, growth/accepted, or growth/closed. Place does not create them. cortex_pack.py creates empty growth/pending and growth/accepted. It does not create growth/closed.
+growth.create: before writing a note, the receiving agent creates the directory if it is absent.
 manifest.snapshot: manifest.files[] is the snapshot taken at build time. Each sha256 is the file bytes at that build. Growth does not rewrite those rows.
 manifest.growth: when Cortex saves, accepts, or rejects a note, it rewrites manifest.growth.pending and manifest.growth.accepted. It does not list growth/closed. The contract hash covers files[], not the growth lists, so that rewrite does not break the seal.
 checksum.scope: the checksum check covers the files that were in the pack at build time

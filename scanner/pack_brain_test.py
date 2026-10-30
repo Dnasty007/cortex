@@ -10,7 +10,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from pack_brain import BIRTH, EMAIL, PHONE, SECRET, build_pack, contract_hash, install_pack, kin_report, public_receipt, strip_header, verify_pack, PackError
+from pack_brain import BIRTH, EMAIL, PHONE, SECRET, build_pack, contract_hash, init_lock, install_pack, kin_report, pattern_lock_hash, public_receipt, strip_header, verify_pack, PackError
 
 PATTERN_LOCK = "b171a331b51288424e50c57f3e8b52a1c0b60e2dac0041be270d88b9dff0a19f"
 
@@ -61,6 +61,26 @@ class PackTests(unittest.TestCase):
         else:
             os.environ["CORTEX_PATTERN_LOCK"] = self._old_lock
         shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def test_init_lock_writes_the_reference_hash(self) -> None:
+        fresh = self.tmp / "fresh" / "pattern.lock"
+        os.environ["CORTEX_PATTERN_LOCK"] = str(fresh)
+        try:
+            result = init_lock()
+            self.assertTrue(result["wrote"])
+            self.assertEqual(fresh.read_text(encoding="utf-8").strip(), PATTERN_LOCK)
+            again = init_lock()
+            self.assertFalse(again["wrote"])
+            fresh.write_text(("a" * 64) + "\n", encoding="utf-8")
+            with self.assertRaises(PackError) as changed:
+                init_lock()
+            self.assertIn(str(fresh), str(changed.exception))
+            fresh.unlink()
+            with self.assertRaises(PackError) as missing:
+                pattern_lock_hash()
+            self.assertIn(str(fresh), str(missing.exception))
+        finally:
+            os.environ["CORTEX_PATTERN_LOCK"] = str(self.lock)
 
     def test_pack_strips_and_leaves_the_home(self) -> None:
         before = (self.home / "memories" / "USER.md").read_text(encoding="utf-8")
