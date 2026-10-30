@@ -169,10 +169,9 @@ def write_pack(source: Path, dest: Path) -> dict:
                 "description": description,
             })
         kept_body = "Kept notes, in order. Read each file under growth/accepted/.\n"
-        kept, kept_row = record_text("growth/kept.md", kept_body, regions, date)
+        kept, _kept_row = record_text("growth/kept.md", kept_body, regions, date)
         ensure_growth_dirs(dest)
         (dest / "growth" / "kept.md").write_text(kept, encoding="utf-8", newline="\n")
-        files.append(kept_row)
         birth, birth_row = record_text("BIRTH.md", BIRTH, regions, date)
         (dest / "BIRTH.md").write_text(birth, encoding="utf-8", newline="\n")
         files.append(birth_row)
