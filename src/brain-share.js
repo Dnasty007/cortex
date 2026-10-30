@@ -1,6 +1,6 @@
 /** Hand a downloaded Cortex birth to another AI. Does not scan a live agent or write keys. */
 
-import { randomBytes } from 'node:crypto'
+import { createHash, randomBytes } from 'node:crypto'
 import fs from 'node:fs'
 import path from 'node:path'
 import { scrubTravelText } from './travel.js'
@@ -171,8 +171,62 @@ export function shareZip(folder) {
   return storeZip(files)
 }
 
+function today() {
+  return new Date().toISOString().slice(0, 10)
+}
+
+function cortexBlock(meta) {
+  const deps = Array.isArray(meta.dependencies) ? meta.dependencies.join(', ') : (meta.dependencies || '')
+  return [
+    ':::cortex',
+    `type: ${meta.type || 'growth'}`,
+    `skill: ${meta.skill || ''}`,
+    `brain-region: ${meta['brain-region'] || 'temporal-l'}`,
+    `version: ${meta.version || '1'}`,
+    `date: ${meta.date || today()}`,
+    `dependencies: ${deps}`,
+    ':::',
+    '',
+  ].join('\n')
+}
+
+function growthMeta(date) {
+  return {
+    type: 'growth',
+    skill: '',
+    'brain-region': 'temporal-l',
+    version: '1',
+    date: date || today(),
+    dependencies: '',
+  }
+}
+
+function readHeader(text) {
+  const raw = String(text || '')
+  const start = raw.indexOf(':::cortex\n')
+  if (start === -1 || start > 4000) return null
+  const end = raw.indexOf('\n:::\n', start)
+  if (end === -1) return null
+  const meta = {}
+  for (const line of raw.slice(start + ':::cortex\n'.length, end).split(/\r?\n/)) {
+    const cut = line.indexOf(':')
+    if (cut === -1) continue
+    meta[line.slice(0, cut).trim()] = line.slice(cut + 1).trim()
+  }
+  return meta
+}
+
+function stripHeader(text) {
+  const raw = String(text || '')
+  const start = raw.indexOf(':::cortex\n')
+  if (start === -1 || start > 4000) return raw
+  const end = raw.indexOf('\n:::\n', start)
+  if (end === -1) return raw
+  return raw.slice(0, start) + raw.slice(end + '\n:::\n'.length)
+}
+
 function parsePending(text) {
-  const match = String(text).match(/^From: ([^\r\n]*)\r?\n\r?\n([\s\S]*)$/)
+  const match = stripHeader(text).match(/^From: ([^\r\n]*)\r?\n\r?\n([\s\S]*)$/)
   if (!match) return null
   return { from: match[1], text: match[2] }
 }
@@ -264,7 +318,8 @@ export function addPending(folder, from, text) {
     if (!fs.existsSync(dest)) break
   }
   if (!SAFE_ID.test(id) || !contained(root, `growth/pending/${id}.md`)) throw new Error(NOT_BIRTH)
-  fs.writeFileSync(dest, `From: ${who}\n\n${clean}`, { encoding: 'utf8', flag: 'wx' })
+  fs.writeFileSync(dest, `${cortexBlock(growthMeta())}From: ${who}\n\n${clean}`, { encoding: 'utf8', flag: 'wx' })
+  refreshGrowth(root)
   return { id, status: 'pending' }
 }
 
@@ -272,11 +327,13 @@ function scrubbedPending(data) {
   const text = data.toString('utf8')
   const parsed = parsePending(text) || { from: 'ai', text }
   const who = cleanFrom(parsed.from)
+  const prior = readHeader(text)
+  const block = cortexBlock(growthMeta(prior && prior.date))
   try {
     const clean = keptNote(parsed.text)
-    return { keep: true, from: who, raw: Buffer.from(`From: ${who}\n\n${clean}`, 'utf8') }
+    return { keep: true, from: who, raw: Buffer.from(`${block}From: ${who}\n\n${clean}`, 'utf8') }
   } catch {
-    return { keep: false, from: who, raw: Buffer.from(`From: ${who}\n\n[held]\n`, 'utf8') }
+    return { keep: false, from: who, raw: Buffer.from(`${block}From: ${who}\n\n[held]\n`, 'utf8') }
   }
 }
 
@@ -286,9 +343,67 @@ function rememberKept(root, id) {
   ensureDir(root, 'growth')
   const prior = realFile(dest) ? fs.readFileSync(dest, 'utf8') : ''
   if (prior.split(/\r?\n/).some((line) => line.trim() === id)) return
-  const header = 'Kept notes, in order. Read each file under growth/accepted/.\n'
-  const next = prior.trim() ? `${prior.replace(/\s*$/, '')}\n${id}\n` : `${header}\n${id}\n`
+  const banner = 'Kept notes, in order. Read each file under growth/accepted/.\n'
+  const next = prior.trim()
+    ? `${prior.replace(/\s*$/, '')}\n${id}\n`
+    : `${cortexBlock({ type: 'growth-index', skill: '', 'brain-region': 'temporal-l', version: '1', date: today(), dependencies: '' })}${banner}\n${id}\n`
   fs.writeFileSync(dest, next, 'utf8')
+}
+
+function growthRows(root, bucket) {
+  const dir = contained(root, `growth/${bucket}`)
+  if (!dir || !isRealDir(dir)) return []
+  let names = []
+  try {
+    names = fs.readdirSync(dir)
+  } catch {
+    return []
+  }
+  const rows = []
+  for (const name of names) {
+    if (!name.endsWith('.md')) continue
+    const rel = `growth/${bucket}/${name}`
+    const file = contained(root, rel)
+    if (!file || !realFile(file)) continue
+    let data
+    try {
+      data = fs.readFileSync(file)
+    } catch {
+      continue
+    }
+    const header = readHeader(data.toString('utf8')) || {}
+    const deps = String(header.dependencies || '').split(',').map((item) => item.trim()).filter(Boolean)
+    rows.push({
+      path: rel,
+      bytes: data.length,
+      sha256: createHash('sha256').update(data).digest('hex'),
+      type: header.type || 'growth',
+      skill: header.skill || '',
+      'brain-region': header['brain-region'] || 'temporal-l',
+      version: header.version || '1',
+      date: header.date || '',
+      dependencies: deps,
+    })
+  }
+  rows.sort((a, b) => (a.path < b.path ? -1 : a.path > b.path ? 1 : 0))
+  return rows
+}
+
+function refreshGrowth(root) {
+  const manifestPath = path.join(root, 'manifest.json')
+  if (!realFile(manifestPath)) return
+  let data
+  try {
+    data = JSON.parse(fs.readFileSync(manifestPath, 'utf8'))
+  } catch {
+    return
+  }
+  if (!data || data.format !== 'cortex-pack-2') return
+  data.growth = {
+    pending: growthRows(root, 'pending'),
+    accepted: growthRows(root, 'accepted'),
+  }
+  fs.writeFileSync(manifestPath, `${JSON.stringify(data, null, 2)}\n`)
 }
 
 function readNoteFile(root, rel) {
@@ -401,11 +516,13 @@ function movePending(folder, id, dirName, status, scrub) {
     }
     if (stat.isSymbolicLink() || !stat.isFile()) return null
     fs.unlinkSync(pending)
+    refreshGrowth(root)
     return { id: name, status: targetStatus, already: true }
   }
   fs.writeFileSync(finalDest, data)
   fs.unlinkSync(pending)
   if (targetStatus === 'accepted') rememberKept(root, name)
+  refreshGrowth(root)
   return { id: name, status: targetStatus, already: false }
 }
 

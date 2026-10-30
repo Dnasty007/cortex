@@ -10,7 +10,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from pack_brain import BIRTH, EMAIL, PHONE, SECRET, build_pack, contract_hash, install_pack, kin_report, public_receipt, verify_pack, PackError
+from pack_brain import BIRTH, EMAIL, PHONE, SECRET, build_pack, contract_hash, install_pack, kin_report, public_receipt, strip_header, verify_pack, PackError
 
 PATTERN_LOCK = "b171a331b51288424e50c57f3e8b52a1c0b60e2dac0041be270d88b9dff0a19f"
 
@@ -107,7 +107,30 @@ class PackTests(unittest.TestCase):
         self.assertIn("not the source runtime", birth)
         self.assertIn("These lines are advice.", birth)
         self.assertIn("computer that built the pack", birth)
-        self.assertEqual((self.out / "BIRTH.md").read_bytes(), BIRTH.encode("utf-8"))
+        self.assertEqual(strip_header((self.out / "BIRTH.md").read_text(encoding="utf-8")), BIRTH)
+        self.assertIn(":::cortex", (self.out / "BIRTH.md").read_text(encoding="utf-8"))
+        self.assertTrue((self.out / "SOUL.md").read_text(encoding="utf-8").startswith("Cortex note.\n"))
+        self.assertIn("brain-region: corpus", (self.out / "SOUL.md").read_text(encoding="utf-8"))
+        self.assertIn("brain-region: temporal-l", (self.out / "memories" / "MEMORY.md").read_text(encoding="utf-8"))
+        self.assertIn("brain-region: temporal-r", (self.out / "memories" / "USER.md").read_text(encoding="utf-8"))
+        skill = next((self.out / "skills").rglob("SKILL.md"))
+        skill_text = skill.read_text(encoding="utf-8")
+        self.assertIn("type: skill", skill_text)
+        self.assertIn("skill: demo", skill_text)
+        self.assertTrue(skill_text.startswith("---\n"))
+        stop = json.loads((self.out / "STOP.json").read_text(encoding="utf-8"))
+        self.assertEqual(stop["format"], "cortex-stop-1")
+        self.assertFalse(stop["stops_tools"])
+        self.assertFalse(stop["loader"])
+        self.assertEqual(stop["cortex"]["type"], "stop")
+        self.assertEqual(stop["cortex"]["brain-region"], "brainstem")
+        self.assertTrue((self.out / "brain-query.mjs").is_file())
+        self.assertIn("regions", manifest)
+        self.assertTrue(any(item["id"].startswith("temporal") for item in manifest["regions"]))
+        demo_skill = next(item for item in manifest["skills"] if item["name"] == "demo")
+        self.assertEqual(demo_skill["brain-region"], "frontal-l")
+        self.assertEqual(len(demo_skill["sha256"]), 64)
+        self.assertEqual(manifest["growth"], {"pending": [], "accepted": []})
         self.assertTrue((self.out / "GROW.md").is_file())
         grow = (self.out / "GROW.md").read_text(encoding="utf-8")
         self.assertIn("This folder is a downloaded brain.", grow)

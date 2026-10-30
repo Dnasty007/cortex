@@ -16,6 +16,14 @@ Paste that AI's folder, then press Build and Birth. Cortex downloads its brain i
 
 Point your other AIs at the new folder. The file they already open tells them to read GROW.md, then the notes listed in growth/kept.md. While Cortex is open on this PC, they can download that same brain from `GET /api/shared-brain/download?path=` the folder, and read one file from `GET /api/shared-brain?path=` the folder `&file=` the file. They can leave a note in growth/pending/. You accept or reject that note in Cortex. An accepted note stays in growth/accepted/ and its name is added to growth/kept.md. The brain grows. The original AI is not changed. Nothing starts itself.
 
+Each text file in that folder carries a cortex header: type, skill, brain-region, version, date, and dependencies. JSON cards keep those same fields under the key cortex. `manifest.json` lists every region, every skill, and every file in `growth/pending` and `growth/accepted`, with a SHA-256 for each file. A receiving agent can list one slice without reading the whole pack:
+
+```bat
+node brain-query.mjs . "show me everything in temporal updated after 2026-10-01"
+```
+
+The script prints a JSON list of paths and headers. It does not print file bodies.
+
 ## What you need
 
 - Windows

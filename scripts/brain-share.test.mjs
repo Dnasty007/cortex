@@ -90,6 +90,10 @@ try {
   const note = pending.find((item) => item.id === added.id)
   assert(note && note.from === 'Grok' && note.text === 'Remember the side door.', 'addPending then listPending returns the note')
   assert(shareFiles(birth).some((file) => file.path === `growth/pending/${added.id}.md`), 'a growth note is part of the share')
+  const pendingFile = fs.readFileSync(path.join(birth, 'growth', 'pending', `${added.id}.md`), 'utf8')
+  assert(pendingFile.startsWith(':::cortex\n') && pendingFile.includes('brain-region: temporal-l'), 'a pending note carries a cortex header')
+  const pendingManifest = JSON.parse(fs.readFileSync(path.join(birth, 'manifest.json'), 'utf8'))
+  assert(pendingManifest.growth.pending.some((item) => item.path === `growth/pending/${added.id}.md` && item.sha256.length === 64), 'manifest lists the pending note and its sha256')
 
   fs.writeFileSync(path.join(birth, 'growth', 'pending', 'not-a-note.md'), 'hello\n')
   assert(!listPending(birth).some((item) => item.id === 'not-a-note'), 'a note with the wrong shape is skipped')
@@ -107,6 +111,9 @@ try {
 
   const accepted = acceptPending(birth, added.id)
   assert(accepted && accepted.id === added.id && accepted.status === 'accepted', 'accept marks the note accepted')
+  const acceptedManifest = JSON.parse(fs.readFileSync(path.join(birth, 'manifest.json'), 'utf8'))
+  assert(acceptedManifest.growth.accepted.some((item) => item.path === `growth/accepted/${added.id}.md` && item.sha256.length === 64), 'manifest lists the accepted note and its sha256')
+  assert(!acceptedManifest.growth.pending.some((item) => item.path.endsWith(`${added.id}.md`)), 'manifest drops the accepted note from pending')
   assert(fs.existsSync(path.join(birth, 'growth', 'accepted', `${added.id}.md`)), 'accept moves it to growth/accepted')
   assert(!fs.existsSync(path.join(birth, 'growth', 'pending', `${added.id}.md`)), 'accept removes the pending file')
   assert(fs.readFileSync(path.join(birth, 'memories', 'MEMORY.md')).equals(memoryBytes), 'accept does not change memories/MEMORY.md bytes')
