@@ -51,6 +51,8 @@ version: 1
 date: YYYY-MM-DD
 dependencies: comma-separated skill names in a text header. A JSON array under cortex.dependencies. Empty when there are none.
 
+frontmatter.order: if YAML frontmatter is present, that block starts on line one. The cortex fence comes after its closing ---. If a file has no frontmatter, the cortex fence may open on line one. The packer places it after the first line when that line has to stay first.
+
 header.regions: memories/MEMORY.md is temporal-l. memories/USER.md is temporal-r. A growth note is temporal-l. A skill is frontal-l or frontal-r. Categories are sorted. The category index is zero-based. Even indexes are frontal-l. Odd indexes are frontal-r. SOUL.md, CLAUDE.md, and AGENTS.md are corpus. STOP.json, ASK.json, BIRTH.md, GROW.md, and HERMES-HANDOFF.md are brainstem.
 
 header.example:
@@ -110,6 +112,14 @@ tool: brain-query.mjs
 query.region: a region name without a suffix matches every region with that prefix. temporal matches temporal-l and temporal-r. frontal matches frontal-l and frontal-r. The same rule applies to the other region names.
 query.exact: a full region id, such as temporal-l, matches only that id.
 
+## inputs
+
+portable.source: a folder of SKILL.md files
+sealed.source: an agent home
+generated: STOP.json, BIRTH.md, and GROW.md
+generated.by: cortex_pack.py and scanner/pack_brain.py
+generated.rule: both packers write these three files into the pack. They do not read them from the source. A missing source copy is not an error. Neither packer fails for that, and neither packer names a missing file.
+
 ## growth
 
 id: eight lowercase hex characters
@@ -123,6 +133,11 @@ reject: the file moves to growth/closed/<id>.md. It is not added to growth/kept.
 agent_accept: refused. The receiving agent cannot accept its own note.
 memory_file: do not edit memories/MEMORY.md to grow. Write a pending note instead.
 kept_header: growth/kept.md starts with a cortex header. The line under it is "Kept notes, in order. Read each file under growth/accepted/." Then one id per line.
+growth.mutable: after a pack is sealed, growth/pending, growth/accepted, and growth/closed may change
+manifest.snapshot: manifest.files[] is the snapshot taken at build time. Each sha256 is the file bytes at that build. Growth does not rewrite those rows.
+manifest.growth: when Cortex saves, accepts, or rejects a note, it rewrites manifest.growth.pending and manifest.growth.accepted. It does not list growth/closed. The contract hash covers files[], not the growth lists, so that rewrite does not break the seal.
+checksum.scope: the checksum check covers the files that were in the pack at build time
+checksum.install: Place checks every packed file. If any file's bytes do not match its manifest sha256, Place refuses the install and writes nothing. It does not skip the file and continue.
 
 ## handoff
 
