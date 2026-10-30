@@ -20,9 +20,10 @@ growth_dirs.present: all three directories are always present in a pack
 growth_dirs.creator: both builders create them if they are absent
 growth_dirs.birth: empty at birth. Neither builder writes notes into them. The receiving agent writes the notes.
 kept: growth/kept.md
-kept.portable: cortex_pack.py writes growth/kept.md with a cortex header and the line "Kept notes, in order. Read each file under growth/accepted/." It is listed in manifest.files.
+kept.portable: cortex_pack.py writes growth/kept.md. The first line is "Kept notes, in order. Read each file under growth/accepted/." The cortex fence follows that line. It is a growth ledger. It is not listed in manifest.files.
 kept.sealed: scanner/pack_brain.py does not write growth/kept.md.
 kept.format: after a human accepts a note, one id per line, oldest first.
+kept.contract: kept.md is absent from the contract body. The contract body is built from manifest.files, and this file is not one of those entries. Birth and Place check manifest.files. An accepted id changes kept.md and does not change those checks.
 stop: STOP.json
 ask: ASK.json
 ask.path: the brain root
@@ -57,7 +58,7 @@ layout.notes: Each skill copy is only SKILL.md. Files beside a skill stay in the
 
 fence_open: :::cortex
 fence_close: :::
-applies_to: every text file in the brain
+applies_to: markdown and plain-text files. brain-query.mjs and JSON cards are under header.code.
 json_key: cortex
 fields: type, skill, brain-region, version, date, dependencies
 type: skill, memory, growth, growth-index, soul, rule, stop, ask, guide, gate, query, or file
@@ -70,7 +71,7 @@ date: YYYY-MM-DD
 dependencies: comma-separated skill names in a text header. A JSON array under cortex.dependencies. Empty when there are none.
 
 frontmatter.order: if YAML frontmatter is present, that block starts on line one. The cortex fence comes after its closing ---. A file that starts with the line "Cortex note." keeps that note through the first blank line, and the fence follows the blank line. Every other file with no frontmatter gets the fence after its first line. A one-line file gets a newline, then the fence.
-header.code: the :::cortex fence is for markdown and plain text. brain-query.mjs receives that same fence. It is not rewritten as a JavaScript comment. JSON cards and gate files carry the fields under the cortex key instead of a text fence.
+header.code: the :::cortex fence applies to markdown and plain-text files. scanner/pack_brain.py writes brain-query.mjs with that fence inside a JavaScript block comment. The file opens with `/*`, then the fence, then `*/`, then the script. cortex_pack.py does not write brain-query.mjs. JSON cards and gate files carry the fields under the cortex key instead of a text fence.
 
 header.regions: memories/MEMORY.md is temporal-l. memories/USER.md is temporal-r. A growth note is temporal-l. A skill is frontal-l or frontal-r. Categories are sorted. The category index is zero-based. Even indexes are frontal-l. Odd indexes are frontal-r. SOUL.md, CLAUDE.md, and AGENTS.md are corpus. STOP.json, ASK.json, BIRTH.md, GROW.md, and HERMES-HANDOFF.md are brainstem.
 
@@ -93,6 +94,7 @@ header.json_example:
 
 file: manifest.json
 format: cortex-pack-2
+manifest.format: the top-level key format on manifest.json. The value is the string cortex-pack-2. It is not a field of manifest.files[]. This document's format is cortex-spec-1.
 checksum: sha256 of the file bytes, lowercase hex, 64 characters
 manifest_checksum: none. The manifest is the index.
 manifest.self: manifest.json does not list itself.
@@ -181,7 +183,7 @@ accept: a person accepts the note in Cortex. The file moves to growth/accepted/<
 reject: the file moves to growth/closed/<id>.md. It is not added to growth/kept.md.
 agent_accept: refused. The receiving agent cannot accept its own note.
 memory_file: do not edit memories/MEMORY.md to grow. Write a pending note instead.
-kept_header: growth/kept.md starts with a cortex header. The line under it is "Kept notes, in order. Read each file under growth/accepted/." Then one id per line.
+kept_header: the banner line is "Kept notes, in order. Read each file under growth/accepted/." cortex_pack.py writes that line first and the cortex fence after it. When the file is missing and Cortex creates it on the first accept, the cortex fence comes first and the banner follows. Accepted ids follow, one per line, oldest first.
 growth.mutable: after a pack is sealed, growth/pending, growth/accepted, and growth/closed may change
 growth.dirs: both builders create empty growth/pending, growth/accepted, and growth/closed if they are absent. Neither builder writes notes into them. Place creates the same three directories if they are absent.
 growth.create: the receiving agent writes the notes. The builder does not.
@@ -239,7 +241,7 @@ refuse.empty: the destination must be empty
 refuse.root: do not use a drive root
 live.markers: SOUL.md, memories/USER.md, memories/MEMORY.md, CLAUDE.md, AGENTS.md, a skills directory, config.yaml, a profiles directory, .claude, .cursor, .agents, .hermes, or a secret-shaped file name
 live.check: Place checks the destination folder itself, every parent up to the drive root, and the destination's immediate siblings.
-live.exempt: a sibling is not treated as a live home when it contains manifest.json with format cortex-pack-2 and a BIRTH.md file, and it has no secret-shaped name. The destination itself is not exempt.
+live.exempt: a sibling is not treated as a live home when it contains manifest.json whose top-level format is cortex-pack-2 and a BIRTH.md file, and it has no secret-shaped name. The destination itself is not exempt. The check reads that format field.
 live.secret: a secret-shaped name is one of auth.json, .env, .env.local, credentials.json, client_secret.json, secrets.json, or id_ed25519.
 source: read only. The source folder is not modified.
 start: nothing in the pack starts itself
@@ -254,3 +256,4 @@ redactions.format: an integer on each manifest.files entry. It counts secret, em
 handoff.rules: standing rules are plain lines after the three fields. They do not carry a cortex header.
 growth.collision: the writer draws a new 8-hex id when that file already exists, and it tries up to 5 draws. It does not overwrite an existing note.
 birth.mismatch: Place refuses the install and writes nothing. It does not log the mismatch and skip the file.
+growth.source: cortex_pack.py packs SKILL.md files. It does not copy notes already in growth/pending, growth/accepted, or growth/closed. Those directories are created empty, and it writes growth/kept.md itself.
