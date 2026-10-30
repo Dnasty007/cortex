@@ -14,6 +14,20 @@ python scanner/pack_brain.py --home <home> --out <pack>
 python scanner/pack_brain.py --pack <pack> --dest <empty-folder>
 ```
 
+## Setup
+
+```bat
+git clone https://github.com/Dnasty007/cortex.git
+cd cortex
+pip install -r requirements.txt
+cd ..
+mkdir pack-here
+cd pack-here
+python ..\cortex\cortex_pack.py <skills-folder>
+```
+
+`requirements.txt` installs nothing. The Python code uses the standard library only. `<skills-folder>` is a folder that contains at least one `SKILL.md`. The pack is written in `pack-here` because the clone contains a `skills` directory, and a pack folder created inside it is refused.
+
 Cortex is for teams running agents across Claude, Grok, Kimi, and others who need one shared source of truth. It is for robotics builders who want a robot's learned state to transfer between machines. It is for anyone who treats an agent's memory as something worth versioning.
 
 `cortex-spec-1` is frozen at tag `cortex-spec-1` on main. It survived cold reads from Claude, Grok, Hermes, and Kimi K2 — twenty-two gaps found and resolved across multiple rounds. The open-questions section lists the remaining known limitations honestly rather than hiding them.
