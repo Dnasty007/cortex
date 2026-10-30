@@ -240,7 +240,7 @@ class PackTests(unittest.TestCase):
         self.assertEqual(clean["lock"], "match")
         self.assertEqual(clean["growth"], [])
         growth = self.dest / "growth"
-        growth.mkdir()
+        growth.mkdir(exist_ok=True)
         (growth / "notes.md").write_bytes(b"new work\n")
         grown = verify_pack(self.dest)
         self.assertTrue(grown["ok"])
