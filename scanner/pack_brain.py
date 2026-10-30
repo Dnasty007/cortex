@@ -965,6 +965,14 @@ def craft_plan(home: Path, kind: str) -> tuple[list[tuple[Path, Path]], list[dic
     return planned, skipped, missing
 
 
+def ensure_growth_dirs(root: Path) -> None:
+    for name in ("pending", "accepted", "closed"):
+        folder = root / "growth" / name
+        if folder.is_symlink():
+            raise PackError("A growth directory is a link.")
+        folder.mkdir(parents=True, exist_ok=True)
+
+
 def build_pack(home: Path, out: Path, label: str, rules_only: bool = False, hold: set[str] | None = None) -> dict:
     assert_pattern_frozen()
     home = home.resolve()
@@ -1146,6 +1154,7 @@ def build_pack(home: Path, out: Path, label: str, rules_only: bool = False, hold
         write_file(out, Path("manifest.json"), json.dumps(manifest, ensure_ascii=False, indent=2) + "\n")
         install_text, _install_row = record_text("INSTALL.txt", INSTALL, regions, pack_date)
         write_file(out, Path("INSTALL.txt"), install_text)
+        ensure_growth_dirs(out)
         return manifest
     except Exception:
         shutil.rmtree(out, ignore_errors=True)
@@ -1254,6 +1263,7 @@ def install_pack(pack: Path, dest: Path) -> dict:
         if not install_text.endswith("\n"):
             install_text += "\n"
         write_file(dest, Path("INSTALL.txt"), install_text)
+        ensure_growth_dirs(dest)
         return {
             "ok": True,
             "files": len(rows),

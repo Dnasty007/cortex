@@ -15,6 +15,10 @@ growth_pending: growth/pending/<id>.md
 growth_accepted: growth/accepted/<id>.md
 growth_closed: growth/closed/<id>.md
 growth_closed.use: rejected notes
+growth_dirs: growth/pending, growth/accepted, and growth/closed
+growth_dirs.present: all three directories are always present in a pack
+growth_dirs.creator: both builders create them if they are absent
+growth_dirs.birth: empty at birth. Neither builder writes notes into them. The receiving agent writes the notes.
 kept: growth/kept.md
 stop: STOP.json
 ask: ASK.json
@@ -161,8 +165,8 @@ agent_accept: refused. The receiving agent cannot accept its own note.
 memory_file: do not edit memories/MEMORY.md to grow. Write a pending note instead.
 kept_header: growth/kept.md starts with a cortex header. The line under it is "Kept notes, in order. Read each file under growth/accepted/." Then one id per line.
 growth.mutable: after a pack is sealed, growth/pending, growth/accepted, and growth/closed may change
-growth.dirs: scanner/pack_brain.py does not create growth/pending, growth/accepted, or growth/closed. Place does not create them. cortex_pack.py creates empty growth/pending and growth/accepted. It does not create growth/closed.
-growth.create: before writing a note, the receiving agent creates the directory if it is absent.
+growth.dirs: both builders create empty growth/pending, growth/accepted, and growth/closed if they are absent. Neither builder writes notes into them. Place creates the same three directories if they are absent.
+growth.create: the receiving agent writes the notes. The builder does not.
 manifest.snapshot: manifest.files[] is the snapshot taken at build time. Each sha256 is the file bytes at that build. Growth does not rewrite those rows.
 manifest.growth: when Cortex saves, accepts, or rejects a note, it rewrites manifest.growth.pending and manifest.growth.accepted. It does not list growth/closed. The contract hash covers files[], not the growth lists, so that rewrite does not break the seal.
 checksum.scope: the checksum check covers the files that were in the pack at build time
