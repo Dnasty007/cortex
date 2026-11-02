@@ -3,13 +3,16 @@
 This process never talks to a physical robot. MuJoCo is an optional extra of
 the upstream package, not a required dependency, so this file does not install
 it. When the extra is present, the demo starts the official daemon entry
-point and the simulated robot is visible for ten seconds.
+point. A pack drives the antennas from the decision engine. No pack keeps
+the six-pose demo.
 """
 
 from __future__ import annotations
 
 import argparse
+import json
 import os
+import re
 import socket
 import subprocess
 import sys
@@ -30,6 +33,15 @@ DAEMON_PORT = 8000
 # Same function the reachy-mini-daemon console script calls.
 DAEMON_MODULE = "reachy_mini.daemon.app.main"
 DAEMON_ARGS = ["--sim", "--no-media"]
+
+# Decision result → antenna pose. Idle is not a route; it is the pose
+# between utterances, when nothing is being decided.
+ROUTE_POSE = {
+    "local": "THINKING",
+    "grok_bot": "HANDOFF",
+    "hermes": "HANDOFF",
+}
+_HEADER = re.compile(r":::cortex\n(.*?)\n:::", re.S)
 
 EXAMPLES = (
     {
@@ -133,7 +145,16 @@ def start_mujoco_daemon() -> subprocess.Popen | None:
 def stop_process(process: subprocess.Popen | None) -> None:
     if process is None or process.poll() is not None:
         return
-    process.terminate()
+    if os.name == "nt":
+        # The venv interpreter re-execs the real Python. Killing the parent
+        # alone leaves the MuJoCo window and port 8000 behind.
+        subprocess.run(
+            ["taskkill", "/PID", str(process.pid), "/T", "/F"],
+            capture_output=True,
+            check=False,
+        )
+    else:
+        process.terminate()
     try:
         process.wait(timeout=5)
     except subprocess.TimeoutExpired:
@@ -145,6 +166,91 @@ def print_decisions(engine: DecisionEngine) -> None:
     for sample in EXAMPLES:
         choice = engine.decide(sample)
         print(f"decision {choice} utterance={sample['utterance']!r}")
+
+
+def _require_pattern_sha256(pack: Path) -> None:
+    """A sealed pack carries pattern_sha256. A blank value names the manifest."""
+    manifest_path = pack / "manifest.json"
+    try:
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as error:
+        raise CortexLoadError(
+            "Birth check failed. pattern_sha256 is missing: manifest.json"
+        ) from error
+    pattern = manifest.get("pattern_sha256") if isinstance(manifest, dict) else None
+    if not isinstance(pattern, str) or not pattern.strip():
+        raise CortexLoadError(
+            "Birth check failed. pattern_sha256 is missing: manifest.json"
+        )
+
+
+def _skill_headers(pack: Path) -> list[dict[str, str]]:
+    """Read cortex headers from skill files the birth check already accepted."""
+    manifest_path = pack / "manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    headers: list[dict[str, str]] = []
+    for item in manifest.get("files") or []:
+        if not isinstance(item, dict):
+            continue
+        rel = str(item.get("path") or "")
+        name = str(item.get("skill") or "").strip()
+        if not name and not rel.endswith("SKILL.md"):
+            continue
+        text = (pack / rel).read_text(encoding="utf-8")
+        header: dict[str, str] = {"skill": name or Path(rel).parent.name}
+        match = _HEADER.search(text[:4000])
+        if match:
+            for line in match.group(1).splitlines():
+                if ":" not in line:
+                    continue
+                key, value = line.split(":", 1)
+                header[key.strip()] = value.strip()
+        headers.append(header)
+    return headers
+
+
+def live_routes(engine: DecisionEngine, loader: CortexLoader, pack: Path) -> list[str]:
+    """Ask the decision engine once per utterance and return antenna poses.
+
+    Skill names and headers ride on the sample. The engine's routing rule is
+    unchanged: it still reads local_skill_match, network_rtt_ms, and ethernet_up.
+    The skill match comes from the pack, not from the demo flags.
+    """
+    skills = loader.list_loaded_skills()
+    headers = _skill_headers(pack)
+    poses: list[str] = []
+    for sample in EXAMPLES:
+        routed = dict(sample)
+        routed["local_skill_match"] = bool(loader.get_skill_context(sample["utterance"]).strip())
+        routed["skills"] = list(skills)
+        routed["headers"] = headers
+        try:
+            choice = engine.decide(routed)
+        except Exception as error:
+            print(
+                f"decision error utterance={sample['utterance']!r} {error}",
+                file=sys.stderr,
+            )
+            choice = "error"
+        print(f"decision {choice} utterance={sample['utterance']!r}")
+        poses.append(ROUTE_POSE.get(choice, "ERROR"))
+    return poses
+
+
+def _hold_pose(antennas: AntennaState, send, state: str, duration: float) -> None:
+    antennas.set_state(state)
+    angles = antennas.get_target_angles()
+    print(f"antenna {state} {angles[0]:.3f} {angles[1]:.3f}")
+    if send is not None:
+        send(angles, duration)
+
+
+def play_routes(antennas: AntennaState, send, poses: list[str]) -> None:
+    """Idle, then each decision pose, then idle again. Nothing is queued ahead."""
+    _hold_pose(antennas, send, "IDLE", 0.45)
+    for state in poses:
+        _hold_pose(antennas, send, state, 1.3)
+        _hold_pose(antennas, send, "IDLE", 0.45)
 
 
 def cycle_antennas(antennas: AntennaState, send) -> None:
@@ -167,12 +273,15 @@ def cycle_antennas(antennas: AntennaState, send) -> None:
 def run_demo(pack: Path | None) -> int:
     engine = DecisionEngine()
     antennas = AntennaState()
-    loader = CortexLoader(pack) if pack is not None else None
-    if loader is not None:
+    routes: list[str] | None = None
+    if pack is not None:
+        loader = CortexLoader(pack)
+        _require_pattern_sha256(pack)
         names = ", ".join(loader.list_loaded_skills()) or "(none)"
         print(f"loaded skills: {names}")
-        print(loader.get_skill_context(EXAMPLES[0]["utterance"]))
-    print_decisions(engine)
+        routes = live_routes(engine, loader, pack)
+    else:
+        print_decisions(engine)
     process = start_mujoco_daemon()
     try:
         if process is not None:
@@ -187,10 +296,16 @@ def run_demo(pack: Path | None) -> int:
                 def send(angles: tuple[float, float], duration: float) -> None:
                     robot.goto_target(antennas=list(angles), duration=duration)
 
-                cycle_antennas(antennas, send)
+                if routes is None:
+                    cycle_antennas(antennas, send)
+                else:
+                    play_routes(antennas, send, routes)
         else:
             print("Antenna cycle is running without the MuJoCo window.")
-            cycle_antennas(antennas, None)
+            if routes is None:
+                cycle_antennas(antennas, None)
+            else:
+                play_routes(antennas, None, routes)
     finally:
         stop_process(process)
     return 0

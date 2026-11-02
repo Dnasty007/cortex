@@ -13,13 +13,19 @@ That command starts the official daemon:
 python -m reachy_mini.daemon.app.main --sim --no-media
 ```
 
-The run prints three routing lines:
+With `--pack`, the runner birth-checks the pack, loads the skill list and any cortex headers, and asks the decision engine once per utterance. The skill match comes from the pack. The antennas follow that result:
 
-- `decision local utterance='use the local tripod gait'` means a local skill matched and the link is fine, so the pack answers.
-- `decision grok_bot utterance='walk while the shop link is down'` means a local skill matched, round-trip time is above 150 ms, and ethernet is down, so Grok Bot answers.
-- `decision hermes utterance='ask about the rental license'` means no local skill matched, so Hermes answers.
+- `local` holds the thinking pose.
+- `grok_bot` holds the handoff pose.
+- `hermes` holds the handoff pose.
+- any other result, including a routing error, holds the error pose.
+- the antennas sit in idle while no utterance is in progress.
 
-Without the MuJoCo extra, the same command prints those lines and the antenna angles. It does not open a robot window. A pack that fails a sha256 check exits non-zero and names the mismatched file.
+The three utterances are still `use the local tripod gait`, `walk while the shop link is down`, and `ask about the rental license`. A local skill on a slow link with no ethernet routes to `grok_bot`. Any other local skill stays `local`. Anything the pack does not match goes to `hermes`.
+
+Without `--pack`, the window still opens and the six demo poses play in order.
+
+Without the MuJoCo extra, the same command prints the decision lines and the antenna angles. It does not open a robot window. A pack that fails a sha256 check exits non-zero and names the mismatched file. A pack with no `pattern_sha256` exits non-zero and names `manifest.json`.
 
 ## Point the loader at a pack
 
