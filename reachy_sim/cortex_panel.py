@@ -21,6 +21,7 @@ ANTENNA_LABEL = {
     "SPEAKING": "speaking",
     "HANDOFF": "handoff",
     "ERROR": "error",
+    "FORWARD": "forward",
 }
 
 
@@ -41,6 +42,10 @@ class CortexPanel:
         self.growth_line = ""
         self.growth_until = 0.0
         self.doa_deg: float | None = None
+        self.action_line = ""
+        self.reply_line = ""
+        self.target_line = ""
+        self.ticket_line = ""
         self._lock = threading.Lock()
         self._thread: threading.Thread | None = None
 
@@ -54,6 +59,10 @@ class CortexPanel:
         """Record one decision. A local or grok_bot match can be highlighted."""
         with self._lock:
             self.decision_line = f"decision {choice} utterance={utterance!r}"
+            self.action_line = ""
+            self.reply_line = ""
+            self.target_line = ""
+            self.ticket_line = ""
             self.rtt_ms = float(rtt_ms)
             if matched_skill and choice in ("local", "grok_bot"):
                 self.matched = matched_skill
@@ -62,6 +71,26 @@ class CortexPanel:
                 self.matched = None
                 self.no_local = True
             self.highlight_until = 0.0
+        if self.console:
+            print(self.text())
+
+    def note_hermes(
+        self,
+        action: str,
+        reply: str,
+        target: str,
+        ticket: str,
+        utterance: str,
+    ) -> None:
+        """Show the action, the words Hermes gave the robot, and any ticket."""
+        with self._lock:
+            self.action_line = f"action {action} utterance={utterance!r}"
+            self.reply_line = f"reply: {reply}" if reply else ""
+            self.target_line = f"target: {target}" if target else ""
+            self.ticket_line = f"ticket: {ticket}" if ticket else ""
+            self.decision_line = ""
+            self.no_local = False
+            self.matched = None
         if self.console:
             print(self.text())
 
@@ -103,6 +132,14 @@ class CortexPanel:
             if self.no_local:
                 lines.append("no local match")
             lines.append(_antenna_line(self.antenna_state, self.angles, self.doa_deg))
+            if self.action_line:
+                lines.append(self.action_line)
+            if self.reply_line:
+                lines.append(self.reply_line)
+            if self.target_line:
+                lines.append(self.target_line)
+            if self.ticket_line:
+                lines.append(self.ticket_line)
             if self.decision_line:
                 lines.append(self.decision_line)
             if self.rtt_ms is not None:
@@ -209,6 +246,10 @@ class CortexPanel:
                     antenna = self.antenna_state
                     angles = self.angles
                     decision = self.decision_line
+                    action = self.action_line
+                    reply = self.reply_line
+                    target = self.target_line
+                    ticket = self.ticket_line
                     rtt = None if self.rtt_ms is None else _rtt_text(self.rtt_ms)
                     pending_n = self.pending_notes
                     flash = self.growth_line if time.monotonic() < self.growth_until else ""
@@ -225,6 +266,14 @@ class CortexPanel:
                         label.configure(text="")
                 nomatch.configure(text="no local match" if quiet else "")
                 rows = [_antenna_line(antenna, angles, doa)]
+                if action:
+                    rows.append(action)
+                if reply:
+                    rows.append(reply)
+                if target:
+                    rows.append(target)
+                if ticket:
+                    rows.append(ticket)
                 if decision:
                     rows.append(decision)
                 if rtt is not None:

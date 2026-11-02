@@ -36,14 +36,31 @@ def maybe_write_growth_note(pack: Path, loader: CortexLoader, utterance: str) ->
     score = loader.match_score(text)
     if not text or score is None or score >= USABLE_MATCH_SCORE:
         return None
+    return _write_pending(pack, text, _note_body(text, score))
+
+
+def write_event_note(pack: Path, utterance: str, reason: str) -> Path | None:
+    """Write one pending note for a Hermes timeout or error.
+
+    The same utterance is still written once. This does not accept the note.
+    """
+    text = utterance.strip()
+    line = reason.strip()
+    if not text or not line:
+        return None
+    body = f"From: reachy-sim\nUtterance: {text}\n{line}\n"
+    return _write_pending(pack, text, body)
+
+
+def _write_pending(pack: Path, utterance: str, body: str) -> Path | None:
     folder = pending_dir(pack)
-    if _already_noted(folder, text):
+    if _already_noted(folder, utterance):
         return None
     folder.mkdir(parents=True, exist_ok=True)
-    path = folder / f"{_note_id(text)}.md"
+    path = folder / f"{_note_id(utterance)}.md"
     if path.is_file():
         return None
-    path.write_text(_note_body(text, score), encoding="utf-8", newline="\n")
+    path.write_text(body, encoding="utf-8", newline="\n")
     return path
 
 

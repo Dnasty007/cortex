@@ -13,7 +13,7 @@ That command starts the official daemon:
 python -m reachy_mini.daemon.app.main --sim --no-media
 ```
 
-With `--pack`, the runner birth-checks the pack, loads the skill list and any cortex headers, and asks the decision engine once per utterance. The skill match comes from the pack. The antennas follow that result:
+With `--pack`, the runner birth-checks the pack and loads the skill list. On every non-empty utterance it asks Hermes and moves only from the JSON Hermes returns. If Hermes cannot be reached, the skill match comes from the pack and the local decision engine chooses:
 
 - `local` holds the thinking pose.
 - `grok_bot` holds the handoff pose.
@@ -24,6 +24,8 @@ With `--pack`, the runner birth-checks the pack, loads the skill list and any co
 The three utterances are still `use the local tripod gait`, `walk while the shop link is down`, and `ask about the rental license`. A local skill on a slow link with no ethernet routes to `grok_bot`. Any other local skill stays `local`. Anything the pack does not match goes to `hermes`.
 
 `--doa` is an optional speaker direction in degrees, from -180 to 180. 0 is straight ahead. On each decision the head yaws up to 25 degrees toward that angle and both antennas add up to 15 degrees. After 1.2 seconds they return to idle. Without `--doa`, each decision uses a small random angle. An error shakes the head once instead of leaning.
+
+Hermes answers with one JSON object: `local`, `delegate`, `buildium`, or `speak`. `local` uses the thinking lean. `delegate` uses a slow outward lean and the panel records the target name. `buildium` uses a forward lean and shows a ticket id when one is present. `speak` holds idle. The robot does not call a Grok Bot, Claude, or Buildium itself. Set `HERMES_API_URL` (optional `HERMES_API_TOKEN` or `HERMES_DESKTOP_REMOTE_URL`) or `HERMES_SSH` to `user@host`. A `.hermes-host` file in the repo root is read the same way the pack scripts read it. `HERMES_SSH_KEY` selects a key file; otherwise the runner uses `~/.ssh/id_ed25519` when that file is already there. This repo does not store a password or a token. If those details are missing, the runner prints `Hermes connection details are missing. Using the local decision path.` Hermes has 12 seconds. A timeout or a bad reply writes one growth note, then uses the local path above. An idle hold does not ask Hermes.
 
 Without `--pack`, the window still opens and the six demo poses play in order.
 

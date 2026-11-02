@@ -2,6 +2,7 @@
 
 import hashlib
 import json
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -139,6 +140,10 @@ def _sealed_pack(root: Path) -> Path:
 
 def _run_pack(pack: Path) -> subprocess.CompletedProcess[str]:
     root = Path(__file__).resolve().parents[2]
+    env = os.environ.copy()
+    for name in list(env):
+        if name.startswith("HERMES_"):
+            env.pop(name, None)
     return subprocess.run(
         [sys.executable, "-m", "reachy_sim.sim_runner", "--pack", str(pack)],
         cwd=root,
@@ -146,6 +151,7 @@ def _run_pack(pack: Path) -> subprocess.CompletedProcess[str]:
         text=True,
         timeout=90,
         check=False,
+        env=env,
     )
 
 

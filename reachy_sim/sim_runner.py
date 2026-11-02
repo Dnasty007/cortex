@@ -3,8 +3,8 @@
 This process never talks to a physical robot. MuJoCo is an optional extra of
 the upstream package, not a required dependency, so this file does not install
 it. When the extra is present, the demo starts the official daemon entry
-point. A pack drives the antennas from the decision engine. No pack keeps
-the six-pose demo.
+point. A pack asks Hermes on every non-empty utterance and moves from that
+reply. No pack keeps the six-pose demo. Idle holds do not ask anyone.
 """
 
 from __future__ import annotations
@@ -26,7 +26,16 @@ from reachy_sim.attention import attention_targets, resolve_doa, shake_yaws
 from reachy_sim.cortex_loader import CortexLoadError, CortexLoader
 from reachy_sim.cortex_panel import CortexPanel
 from reachy_sim.decision_engine import DecisionEngine
-from reachy_sim.growth_note import maybe_write_growth_note, pending_count
+from reachy_sim.growth_note import maybe_write_growth_note, pending_count, write_event_note
+from reachy_sim.hermes_body import (
+    HermesClient,
+    HermesError,
+    HermesReply,
+    HermesTimeout,
+    discover_connection,
+    hermes_prompt,
+    motion_for,
+)
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -223,45 +232,133 @@ def live_routes(
     panel: CortexPanel,
     doa: float | None,
     rng: random.Random,
+    client: HermesClient | None = None,
 ) -> list[dict]:
-    """Ask the decision engine once per utterance and return antenna poses.
+    """Ask Hermes once per non-empty utterance and return antenna poses.
 
-    Skill names and headers ride on the sample. The engine's routing rule is
-    unchanged: it still reads local_skill_match, network_rtt_ms, and ethernet_up.
-    The skill match comes from the pack, not from the demo flags.
+    A missing Hermes connection keeps the local decision engine. That engine
+    still reads only local_skill_match, network_rtt_ms, and ethernet_up.
+    Idle holds do not call this.
     """
-    skills = loader.list_loaded_skills()
-    headers = _skill_headers(pack)
+    if client is None:
+        client = HermesClient(discover_connection(root=REPO_ROOT))
+    client.warn_if_missing()
     routes: list[dict] = []
     for sample in EXAMPLES:
-        utterance = str(sample["utterance"])
-        matched = loader.best_match(utterance)
-        routed = dict(sample)
-        routed["local_skill_match"] = matched is not None
-        routed["skills"] = list(skills)
-        routed["headers"] = headers
-        try:
-            choice = engine.decide(routed)
-        except Exception as error:
-            print(
-                f"decision error utterance={utterance!r} {error}",
-                file=sys.stderr,
-            )
-            choice = "error"
-        print(f"decision {choice} utterance={utterance!r}")
-        panel.note_decision(choice, utterance, float(sample["network_rtt_ms"]), matched)
-        written = maybe_write_growth_note(pack, loader, utterance)
-        if written is not None:
-            first = written.read_text(encoding="utf-8").splitlines()[0]
-            panel.note_growth(pending_count(pack), first)
-        routes.append(
-            {
-                "pose": ROUTE_POSE.get(choice, "ERROR"),
-                "choice": choice,
-                "doa": resolve_doa(doa, rng),
-            }
-        )
+        route = route_utterance(engine, loader, pack, panel, sample, client, doa, rng)
+        if route is not None:
+            routes.append(route)
     return routes
+
+
+def route_utterance(
+    engine: DecisionEngine,
+    loader: CortexLoader,
+    pack: Path,
+    panel: CortexPanel,
+    sample: dict,
+    client: HermesClient,
+    doa: float | None,
+    rng: random.Random,
+) -> dict | None:
+    """One utterance. Empty text does nothing. Hermes replaces the local step."""
+    utterance = str(sample["utterance"])
+    if not utterance.strip():
+        return None
+    if client.connection is None:
+        return _local_decision(engine, loader, pack, panel, sample, doa, rng)
+    try:
+        answer = client.ask(hermes_prompt(utterance, pack))
+    except HermesTimeout:
+        print(f"Hermes timed out utterance={utterance!r}", file=sys.stderr)
+        _note_hermes_failure(pack, panel, utterance, "Hermes timed out.")
+        return _local_decision(engine, loader, pack, panel, sample, doa, rng)
+    except HermesError as error:
+        print(f"Hermes error utterance={utterance!r} {error}", file=sys.stderr)
+        _note_hermes_failure(pack, panel, utterance, "Hermes returned an error.")
+        return _local_decision(engine, loader, pack, panel, sample, doa, rng)
+    return _hermes_decision(panel, answer, utterance, doa, rng)
+
+
+def _local_decision(
+    engine: DecisionEngine,
+    loader: CortexLoader,
+    pack: Path,
+    panel: CortexPanel,
+    sample: dict,
+    doa: float | None,
+    rng: random.Random,
+) -> dict:
+    """The decision path used before Hermes, and after a Hermes failure."""
+    utterance = str(sample["utterance"])
+    matched = loader.best_match(utterance)
+    routed = dict(sample)
+    routed["local_skill_match"] = matched is not None
+    routed["skills"] = list(loader.list_loaded_skills())
+    routed["headers"] = _skill_headers(pack)
+    try:
+        choice = engine.decide(routed)
+    except Exception as error:
+        print(
+            f"decision error utterance={utterance!r} {error}",
+            file=sys.stderr,
+        )
+        choice = "error"
+    print(f"decision {choice} utterance={utterance!r}")
+    panel.note_decision(choice, utterance, float(sample["network_rtt_ms"]), matched)
+    written = maybe_write_growth_note(pack, loader, utterance)
+    if written is not None:
+        first = written.read_text(encoding="utf-8").splitlines()[0]
+        panel.note_growth(pending_count(pack), first)
+    return {
+        "pose": ROUTE_POSE.get(choice, "ERROR"),
+        "base": None,
+        "choice": choice,
+        "doa": resolve_doa(doa, rng),
+        "duration": LEAN_SECONDS,
+        "reply": "",
+        "target": "",
+        "ticket": "",
+    }
+
+
+def _hermes_decision(
+    panel: CortexPanel,
+    answer: HermesReply,
+    utterance: str,
+    doa: float | None,
+    rng: random.Random,
+) -> dict:
+    """Move and speak only what Hermes returned.
+
+    A delegate target is recorded here. This process does not call Grok Bot,
+    Claude, or the Buildium API.
+    """
+    motion = motion_for(answer.action)
+    print(answer.reply)
+    if answer.ticket:
+        print(f"ticket: {answer.ticket}")
+    if answer.action == "delegate":
+        print(f"delegate target={answer.target}")
+    panel.note_hermes(answer.action, answer.reply, answer.target, answer.ticket, utterance)
+    return {
+        "pose": motion["state"],
+        "base": motion["angles"],
+        "choice": answer.action,
+        "doa": resolve_doa(doa, rng),
+        "duration": motion["duration"],
+        "reply": answer.reply,
+        "target": answer.target,
+        "ticket": answer.ticket,
+    }
+
+
+def _note_hermes_failure(pack: Path, panel: CortexPanel, utterance: str, reason: str) -> None:
+    written = write_event_note(pack, utterance, reason)
+    if written is None:
+        return
+    first = written.read_text(encoding="utf-8").splitlines()[0]
+    panel.note_growth(pending_count(pack), first)
 
 
 def _command(
@@ -273,7 +370,8 @@ def _command(
     duration: float,
     panel: CortexPanel | None = None,
 ) -> None:
-    antennas.set_state(state)
+    if state in ANGLES:
+        antennas.set_state(state)
     print(
         f"antenna {state} {angles[0]:.3f} {angles[1]:.3f} "
         f"head {math.degrees(yaw):.1f}"
@@ -291,6 +389,8 @@ def _look_toward(
     pose: str,
     doa_deg: float,
     choice: str,
+    duration: float = LEAN_SECONDS,
+    base: tuple[float, float] | None = None,
 ) -> None:
     """Lean toward the speaker, then return to idle. An error shakes once."""
     panel.set_doa(doa_deg)
@@ -301,11 +401,15 @@ def _look_toward(
             _command(antennas, send, "ERROR", angles, yaw, 0.3, panel)
         _command(antennas, send, "IDLE", ANGLES["IDLE"], 0.0, 0.3, panel)
         return
-    antennas.set_state(pose)
-    yaw, leaned = attention_targets(doa_deg, antennas.get_target_angles())
-    _command(antennas, send, pose, leaned, yaw, LEAN_SECONDS, panel)
+    if pose in ANGLES:
+        antennas.set_state(pose)
+        origin = antennas.get_target_angles()
+    else:
+        origin = base if base is not None else ANGLES["IDLE"]
+    yaw, leaned = attention_targets(doa_deg, origin)
+    _command(antennas, send, pose, leaned, yaw, duration, panel)
     if send is not None:
-        remaining = ATTEND_SECONDS - LEAN_SECONDS
+        remaining = ATTEND_SECONDS - duration
         if remaining > 0:
             time.sleep(remaining)
     _command(antennas, send, "IDLE", ANGLES["IDLE"], 0.0, 0.4, panel)
@@ -335,6 +439,8 @@ def play_routes(antennas: AntennaState, send, routes: list[dict], panel: CortexP
             str(route["pose"]),
             float(route["doa"]),
             str(route["choice"]),
+            duration=float(route.get("duration", LEAN_SECONDS)),
+            base=route.get("base"),
         )
 
 
@@ -373,7 +479,15 @@ def run_demo(pack: Path | None, doa: float | None = None) -> int:
             panel.open_window()
         panel.set_pending(pending_count(pack))
         panel.set_antenna("IDLE", antennas.get_target_angles())
-        routes = live_routes(engine, loader, pack, panel, doa, random.Random())
+        routes = live_routes(
+            engine,
+            loader,
+            pack,
+            panel,
+            doa,
+            random.Random(),
+            HermesClient(discover_connection(root=REPO_ROOT)),
+        )
     else:
         print_decisions(engine)
     process = start_mujoco_daemon()
