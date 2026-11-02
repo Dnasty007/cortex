@@ -63,6 +63,20 @@ class CortexLoader:
             return None
         return str(ranked[0]["name"])
 
+    def match_score(self, query: str) -> int | None:
+        """Return the top overlap count.
+
+        None means the utterance has no content word left after stop words.
+        Zero means it has content words and none of them hit a skill.
+        """
+        wanted = _content_tokens(query)
+        if not wanted:
+            return None
+        best = 0
+        for skill in self._skills:
+            best = max(best, len(wanted & skill["tokens"]))
+        return best
+
     def _rank(self, query: str) -> list[dict]:
         wanted = _content_tokens(query)
         if not wanted:

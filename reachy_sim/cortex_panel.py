@@ -37,6 +37,9 @@ class CortexPanel:
         self.angles = (0.0, 0.0)
         self.decision_line = ""
         self.rtt_ms: float | None = None
+        self.pending_notes = 0
+        self.growth_line = ""
+        self.growth_until = 0.0
         self._lock = threading.Lock()
         self._thread: threading.Thread | None = None
 
@@ -58,6 +61,19 @@ class CortexPanel:
                 self.matched = None
                 self.no_local = True
             self.highlight_until = 0.0
+        if self.console:
+            print(self.text())
+
+    def set_pending(self, count: int) -> None:
+        with self._lock:
+            self.pending_notes = count
+
+    def note_growth(self, count: int, first_line: str) -> None:
+        """Show a new pending note. The first line stays up for about a second."""
+        with self._lock:
+            self.pending_notes = count
+            self.growth_line = first_line
+            self.growth_until = time.monotonic() + HIGHLIGHT_SECONDS
         if self.console:
             print(self.text())
 
@@ -88,6 +104,9 @@ class CortexPanel:
                 lines.append(self.decision_line)
             if self.rtt_ms is not None:
                 lines.append(f"rtt {_rtt_text(self.rtt_ms)} ms")
+            lines.append(f"pending notes: {self.pending_notes}")
+            if self.growth_line and time.monotonic() < self.growth_until:
+                lines.append(self.growth_line)
             return "\n".join(lines)
 
     def open_window(self) -> bool:
@@ -126,7 +145,7 @@ class CortexPanel:
                 return
             root.title("Cortex")
             root.configure(bg="#141414")
-            root.geometry("420x460")
+            root.geometry("420x520")
             count = tk.Label(
                 root,
                 text="",
@@ -157,6 +176,16 @@ class CortexPanel:
                 font=("Segoe UI", 10),
             )
             nomatch.pack(fill="x", padx=16, pady=(8, 0))
+            pending = tk.Label(
+                root,
+                text="",
+                bg="#141414",
+                fg="#e8e4dc",
+                anchor="w",
+                justify="left",
+                font=("Segoe UI", 10),
+            )
+            pending.pack(fill="x", padx=16, pady=(8, 0))
             status = tk.Label(
                 root,
                 text="",
@@ -178,6 +207,8 @@ class CortexPanel:
                     angles = self.angles
                     decision = self.decision_line
                     rtt = None if self.rtt_ms is None else _rtt_text(self.rtt_ms)
+                    pending_n = self.pending_notes
+                    flash = self.growth_line if time.monotonic() < self.growth_until else ""
                 count.configure(text=f"{total} skills loaded")
                 for index, label in enumerate(skill_labels):
                     if index < len(skills):
@@ -194,6 +225,10 @@ class CortexPanel:
                     rows.append(decision)
                 if rtt is not None:
                     rows.append(f"rtt {rtt} ms")
+                pending.configure(
+                    text=f"pending notes: {pending_n}" + (f"\n{flash}" if flash else ""),
+                    fg="#e6b422" if flash else "#e8e4dc",
+                )
                 status.configure(text="\n".join(rows))
                 root.after(100, paint)
 

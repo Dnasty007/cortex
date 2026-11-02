@@ -23,6 +23,7 @@ from reachy_sim.antenna_state import ANGLES, AntennaState
 from reachy_sim.cortex_loader import CortexLoadError, CortexLoader
 from reachy_sim.cortex_panel import CortexPanel
 from reachy_sim.decision_engine import DecisionEngine
+from reachy_sim.growth_note import maybe_write_growth_note, pending_count
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -242,6 +243,10 @@ def live_routes(
             choice = "error"
         print(f"decision {choice} utterance={utterance!r}")
         panel.note_decision(choice, utterance, float(sample["network_rtt_ms"]), matched)
+        written = maybe_write_growth_note(pack, loader, utterance)
+        if written is not None:
+            first = written.read_text(encoding="utf-8").splitlines()[0]
+            panel.note_growth(pending_count(pack), first)
         routes.append(
             {
                 "pose": ROUTE_POSE.get(choice, "ERROR"),
@@ -309,6 +314,7 @@ def run_demo(pack: Path | None) -> int:
         )
         if not panel.console:
             panel.open_window()
+        panel.set_pending(pending_count(pack))
         panel.set_antenna("IDLE", antennas.get_target_angles())
         routes = live_routes(engine, loader, pack, panel)
     else:

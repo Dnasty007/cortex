@@ -25,7 +25,7 @@ The three utterances are still `use the local tripod gait`, `walk while the shop
 
 Without `--pack`, the window still opens and the six demo poses play in order.
 
-With a pack, a Cortex panel sits beside the body. It lists up to 12 skill titles, a count when there are more, the last decision, the round-trip time used for that decision, and the antenna state next to the angles. The matched skill is gold for about a second. A `grok_bot` or `hermes` result with no local skill shows a dim `no local match` line.
+With a pack, a Cortex panel sits beside the body. It lists up to 12 skill titles, a count when there are more, the last decision, the round-trip time used for that decision, the antenna state next to the angles, and `pending notes: N`. The matched skill is gold for about a second. A `grok_bot` or `hermes` result with no local skill shows a dim `no local match` line. A decision with no usable local match writes one file under `growth/pending/`. The robot does not accept that note, and it does not edit sealed files.
 
 Without the MuJoCo extra, the same command prints those panel lines, the decision lines, and the antenna angles. It does not open a robot window. A pack that fails a sha256 check exits non-zero and names the mismatched file. A pack with no `pattern_sha256` exits non-zero and names `manifest.json`.
 
