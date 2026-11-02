@@ -9,6 +9,7 @@ from pathlib import Path
 import pytest
 
 from reachy_sim.cortex_loader import CortexLoadError, CortexLoader
+from reachy_sim.decision_engine import DecisionEngine
 
 
 def _sha(text: str) -> str:
@@ -47,6 +48,42 @@ def _good_pack(root: Path) -> Path:
     ]
     _manifest(pack, files)
     return pack
+
+
+def test_stop_words_do_not_count_as_a_local_match(tmp_path: Path) -> None:
+    pack = tmp_path / "pack"
+    notes = "Use the local desk notes.\n"
+    lease = "Philadelphia rental license renewal.\n"
+    files = [
+        {
+            "path": "skills/notes/SKILL.md",
+            "sha256": _write(pack, "skills/notes/SKILL.md", notes),
+            "skill": "notes",
+        },
+        {
+            "path": "skills/lease/SKILL.md",
+            "sha256": _write(pack, "skills/lease/SKILL.md", lease),
+            "skill": "lease",
+        },
+    ]
+    _manifest(pack, files)
+    loader = CortexLoader(pack)
+    engine = DecisionEngine()
+
+    def route(utterance: str, rtt: float, ethernet: bool) -> str:
+        return engine.decide(
+            {
+                "utterance": utterance,
+                "local_skill_match": bool(loader.get_skill_context(utterance).strip()),
+                "network_rtt_ms": rtt,
+                "ethernet_up": ethernet,
+            }
+        )
+
+    assert route("use the local tripod gait", 40, True) != "local"
+    assert loader.get_skill_context("use the local tripod gait") == ""
+    assert route("ask about the rental license", 20, True) == "local"
+    assert "rental license" in loader.get_skill_context("ask about the rental license")
 
 
 def test_loader_lists_skills_and_ranks_context(tmp_path: Path) -> None:

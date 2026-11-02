@@ -14,6 +14,30 @@ class CortexLoadError(Exception):
 
 _TOKEN = re.compile(r"[a-z0-9]{2,}")
 _CLOSED = ("jobs", "profiles")
+# These overlap almost every file. They never count as a skill match.
+STOP_WORDS = frozenset(
+    {
+        "the",
+        "a",
+        "an",
+        "and",
+        "or",
+        "but",
+        "if",
+        "is",
+        "are",
+        "was",
+        "be",
+        "to",
+        "of",
+        "in",
+        "on",
+        "for",
+        "with",
+        "use",
+        "local",
+    }
+)
 
 
 class CortexLoader:
@@ -29,17 +53,28 @@ class CortexLoader:
         return [skill["name"] for skill in self._skills]
 
     def get_skill_context(self, query: str) -> str:
-        """Return the text of skills that share keywords with the query."""
-        wanted = set(_TOKEN.findall(query.lower()))
+        """Return the text of skills that share a content word with the query."""
+        return "\n\n".join(skill["text"] for skill in self._rank(query))
+
+    def best_match(self, query: str) -> str | None:
+        """Return the loaded skill title with the strongest content-word overlap."""
+        ranked = self._rank(query)
+        if not ranked:
+            return None
+        return str(ranked[0]["name"])
+
+    def _rank(self, query: str) -> list[dict]:
+        wanted = _content_tokens(query)
         if not wanted:
-            return ""
-        ranked: list[tuple[int, int, str]] = []
+            return []
+        ranked: list[tuple[int, int, dict]] = []
         for index, skill in enumerate(self._skills):
             score = len(wanted & skill["tokens"])
-            if score:
-                ranked.append((score, -index, skill["text"]))
+            if score < 1:
+                continue
+            ranked.append((score, -index, skill))
         ranked.sort(reverse=True)
-        return "\n\n".join(text for _, _, text in ranked)
+        return [skill for _, _, skill in ranked]
 
     def _birth_check(self, pack: Path) -> dict:
         """Verify manifest.files checksums and refuse a jobs or profiles directory."""
@@ -114,6 +149,41 @@ class CortexLoader:
                 text = target.read_text(encoding="utf-8")
             except (OSError, UnicodeError) as error:
                 raise CortexLoadError(f"Could not read skill file: {rel}") from error
-            tokens = set(_TOKEN.findall(f"{name}\n{text}".lower()))
+            title, description = _title_and_description(name, text)
+            tokens = _content_tokens(f"{name}\n{title}\n{description}")
             skills.append({"name": name, "text": text, "tokens": tokens})
         return skills
+
+
+def _content_tokens(text: str) -> set[str]:
+    """Keep tokens that can identify a skill. Stop words are dropped."""
+    return {token for token in _TOKEN.findall(text.lower()) if token not in STOP_WORDS}
+
+
+def _title_and_description(name: str, text: str) -> tuple[str, str]:
+    """Title is the skill name. Description is the frontmatter line, or the body."""
+    title = name
+    body = text
+    description = ""
+    if text.startswith("---\n"):
+        end = text.find("\n---", 3)
+        if end != -1:
+            raw = text[4:end]
+            body = text[end + 4 :]
+            if body.startswith("\n"):
+                body = body[1:]
+            for line in raw.splitlines():
+                if line.startswith("description:"):
+                    description = line.split(":", 1)[1].strip().strip("\"'")
+                elif line.startswith("name:"):
+                    found = line.split(":", 1)[1].strip().strip("\"'")
+                    if found:
+                        title = found
+    header = body.find(":::cortex\n")
+    if 0 <= header <= 4000:
+        close = body.find("\n:::\n", header)
+        if close != -1:
+            body = body[:header] + body[close + 5 :]
+    if not description:
+        description = body.strip()
+    return title, description
