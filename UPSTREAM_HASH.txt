@@ -1,0 +1,3 @@
+repository=https://github.com/pollen-robotics/reachy_mini
+branch=main
+commit=3d58a5068812e2a96257dce3b1922da62b51a175

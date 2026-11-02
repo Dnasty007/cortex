@@ -1,0 +1,185 @@
+[build-system]
+requires = ["setuptools"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "reachy_mini"
+version = "1.14.0.dev0"
+authors = [{ name = "Pollen Robotics", email = "contact@pollen-robotics.com" }]
+description = ""
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "aiohttp>=3.14.0",
+    "asgiref",
+    # 2026.10.19 distrusts the compromised eMudhra intermediates (CVE-2026-111943).
+    "certifi>=2026.10.19",
+    "fastapi",
+    # Floor is 1.20.1, NOT 1.20.0: the device-code OAuth flow (apps/sources/hf_auth.py)
+    # imports PRIVATE huggingface_hub internals, and the `_oauth_device` module lived at
+    # the top level in 1.20.0 before moving to `utils/` in 1.20.1 (where it has stayed,
+    # import- and signature-identical, through at least 1.24.0). `_login._save_oauth_token`
+    # (refresh-capable token persistence backing get_token()) and `errors.DeviceCodeError`
+    # are likewise private. This private-API contract is guarded in CI by
+    # tests/unit_tests/test_hf_hub_private_api_contract.py, which runs against both the
+    # locked version and (in a dedicated job) the latest version allowed by this range —
+    # so an upstream break surfaces in CI rather than at runtime on a robot.
+    "huggingface-hub>=1.20.1,<2.0.0",
+    "jinja2",
+    "libusb_package>=1.0.26.3",
+    "log-throttling==0.0.3",
+    "numpy>=2.2.5",
+    "onnxruntime==1.27.0",
+    # pip vendors its own CA bundle; updating certifi alone does not protect it.
+    "pip>=26.2.2",
+    "platformdirs",
+    "psutil",
+    "pulsectl>=24.1.0; sys_platform == 'linux'",
+    "pycaw>=20240210; sys_platform == 'win32'",
+    "pydantic>=2.12.5,<3.0.0",
+    "pyserial",
+    "python-multipart>=0.0.27",
+    "pyusb>=1.2.1",
+    "pyyaml>=6.0",
+    "questionary",
+    "requests>=2.33.0",
+    "rich",
+    "rustypot>=1.4.2",
+    # Starlette 1.3.1 fixes the last advisory affecting the previous 0.x range.
+    "starlette>=1.3.1,<2.0.0",
+    "toml",
+    "uvicorn[standard]",
+    "websockets>=12,<16",
+    "zeroconf>=0.149.7,<1",
+
+    # Reachy Mini specifics
+    "reachy-mini-rust-kinematics>=1.0.3",
+    "reachy_mini_motor_controller>=1.5.5",
+
+    "gstreamer-bundle==1.28.3; sys_platform != 'linux'",
+    # OS-specific: use PyGObject for Linux
+    "PyGObject>=3.42.2,<=3.46.0; sys_platform == 'linux'",
+]
+
+[project.optional-dependencies]
+examples = [
+    "pynput",
+    "soundfile",
+    "opencv-python<=5.0",
+    "cv2_enumerate_cameras>=1.2.1",
+    "gradio-client",
+]
+mujoco = ["mujoco==3.3.0"]
+placo_kinematics = [
+    "placo==0.9.14; sys_platform != 'win32'",
+    "tornado>=6.5.5; sys_platform != 'win32'", # security floor for meshcat transitive dependency
+]
+rerun = ["rerun-sdk>=0.29.0,<=0.31.3"]
+wireless-version = [
+    "semver>=3,<4",
+    "nmcli>=1.5; sys_platform == 'linux'",
+    # Sealed BLE WiFi provisioning (wifi_config.py) does X25519 + HKDF +
+    # AES-GCM to keep the WiFi password off the air in cleartext. Was only
+    # present transitively before; declared here now that it's a direct import.
+    "cryptography>=42.0",
+    "pollen_BMI088_imu_library; sys_platform == 'linux'",
+    "gpiozero>=2.0.0; sys_platform == 'linux'",
+    "lgpio>=0.2.2.0; sys_platform == 'linux'",
+]
+opencv = ["opencv-python<=5.0", "cv2_enumerate_cameras>=1.2.1"]
+# `media.central_consumer` only: a cloud backend consuming a robot over the
+# HF central relay. Kept out of the base install because a robot never runs
+# the consumer, and aiortc pulls a native SRTP/crypto stack with it.
+central-consumer = [
+    "aiortc>=1.9",
+    "av>=12",
+]
+all = [
+    "reachy_mini[examples]",
+    "reachy_mini[mujoco]",
+    "reachy_mini[placo_kinematics]",
+    "reachy_mini[rerun]",
+    "reachy_mini[wireless-version]",
+    "reachy_mini[opencv]",
+    "reachy_mini[central-consumer]",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=9.0.3",
+    # Test-only: the oracle that test_rotation_matches_scipy.py fuzzes
+    # utils/rotation.py against, plus scipy.signal in test_audio.py. The SDK
+    # itself no longer imports scipy at runtime (see #1342).
+    "scipy>=1.15.3,<2.0.0",
+    "pytest-asyncio",
+    "ruff==0.12.0",
+    "onshape-to-robot==1.7.6",
+    "pre-commit",
+    "mypy==1.18.2",
+    "types-requests",
+    "types-toml",
+    "types-PyYAML",
+]
+
+[project.scripts]
+reachy-mini-daemon = "reachy_mini.daemon.app.main:main"
+reachy-mini-app-assistant = "reachy_mini.apps.app:main"
+reachy-mini-reflash-motors = "reachy_mini.tools.reflash_motors:main"
+
+[tool.uv]
+required-version = ">=0.13.4"
+exclude-newer = "7 days"
+
+[tool.uv.exclude-newer-package]
+"pollen_BMI088_imu_library"  = false
+# Security fix inside the 7-day window: admit 2026.10.19, not later releases.
+# Remove both certifi and pip exceptions after 2026-10-27.
+"certifi" = "2026-10-21T00:00:00Z"
+# Admit the patched pip bootstrap release during the same security exception.
+"pip" = "2026-10-21T00:00:00Z"
+# huggingface-hub is pinned to an exact version (==1.20.1) in [project.dependencies],
+# released well before the 7-day cutoff, so no opt-out is needed here.
+
+[tool.setuptools]
+package-dir = { "" = "src" }
+include-package-data = true
+
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+
+[tool.setuptools.package-data]
+reachy_mini = ["**/*"] # includes all non .py files
+
+[tool.ruff]
+exclude = [
+    "src/reachy_mini/__init__.py",
+    "build/*",
+    "conftest.py",
+    "src/reachy_mini_dashboard/*",
+    "tests/*",
+]
+lint.extend-select = ["I", "D"]
+lint.ignore = [
+    "D203", # Incompatible with D211
+    "D213", # Incompatible with D212
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests/unit_tests"]
+markers = [
+    "audio: mark test as requiring audio hardware",
+    "respeaker: mark test as requiring the physical ReSpeaker/XMOS audio board",
+    "loopback: mark test as requiring a virtual audio loopback (verifies real audio flow)",
+    "video: mark test as requiring video hardware",
+    "wireless: mark test as requiring wireless Reachy Mini",
+    "webrtc: mark test as requiring the gst-plugins-rs webrtc plugin (libgstrswebrtc.so)",
+    "ipc_resolution: override the resolution used by the ipc_video_source fixture",
+]
+
+[tool.mypy]
+python_version = "3.12"
+files = ["src/", "examples/"]
+ignore_missing_imports = true
+strict = true

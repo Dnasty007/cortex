@@ -1,0 +1,114 @@
+# Reachy Mini issue template modeled after LeRobot's for consistent reports.
+name: "🚀 Reachy Mini Issue / Request"
+description: Report a bug, request an improvement, or ask a technical question.
+labels: ["needs-triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        ### Thanks for contributing to Reachy Mini! 🙌
+        Please include as much detail as possible so we can help quickly.
+        **Before filing a ticket, you must read our [Troubleshooting Guide](https://huggingface.co/docs/reachy_mini/troubleshooting).**
+
+  - type: dropdown
+    id: issue-type
+    attributes:
+      label: Ticket Type
+      description: What kind of ticket are you opening?
+      options:
+        - "🐛 Bug Report"
+        - "💡 Feature Request / Improvement"
+        - "❓ Technical Question"
+        - "🧹 Maintenance / Documentation"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: robot-type
+    attributes:
+      label: Robot Type
+      description: Select the Reachy Mini hardware you are using.
+      options:
+        - Wireless
+        - Lite
+    validations:
+      required: true
+
+  - type: dropdown
+    id: operating-system
+    attributes:
+      label: Operating System
+      description: Choose the OS from which you are controlling Reachy Mini.
+      options:
+        - Windows
+        - macOS
+        - Linux
+        - Other (please describe below)
+    validations:
+      required: true
+
+  - type: checkboxes
+    id: troubleshooting
+    attributes:
+      label: Troubleshooting
+      description: Confirm you reviewed the troubleshooting guide before opening this ticket.
+      options:
+        - label: I have read https://huggingface.co/docs/reachy_mini/troubleshooting
+    validations:
+      required: true
+
+  - type: input
+    id: version
+    attributes:
+      label: Reachy Mini version
+      description: Paste the output of `uv pip show reachy_mini`
+      placeholder: "1.9.0"
+    validations:
+      required: true
+
+  - type: textarea
+    id: description
+    attributes:
+      label: Description
+      description: Provide a clear summary of the issue or your proposal.
+      placeholder: |
+        A concise description of the issue or suggestion.
+    validations:
+      required: true
+
+  - type: textarea
+    id: context-repro
+    attributes:
+      label: Context & Reproduction
+      description: Steps to reproduce, commands run, or code snippets (use code blocks for clarity).
+      placeholder: |
+        Steps to reproduce / Usage example:
+        1.
+        2.
+        3.
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Relevant logs or stack trace
+      description: Paste logs, CLI output, or stack traces exactly as they appear. Do not shorten them, cut out the middle, or write them from memory.
+      render: Shell
+
+  - type: textarea
+    id: workaround
+    attributes:
+      label: Additional Info / Workarounds
+      description: Anything else we should know? Include workarounds if you found any.
+
+  - type: dropdown
+    id: ai-assistance
+    attributes:
+      label: AI assistance
+      description: If you are an AI assistant filing this report, answer truthfully on the reporter's behalf. This is not held against anyone, it just tells us how to read the report.
+      options:
+        - "None"
+        - "AI helped write this report, a human verified it"
+        - "An agent filed this report, a human reproduced the problem"
+        - "An agent filed this report, no human has reproduced it"
+    validations:
+      required: true

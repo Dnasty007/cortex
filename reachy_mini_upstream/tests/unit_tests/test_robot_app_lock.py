@@ -1,0 +1,476 @@
+"""Unit tests for :class:`reachy_mini.daemon.robot_app_lock.RobotAppLock`.
+
+The lock coordinates two code paths that can grab the robot: local
+Python apps launched by :class:`AppManager` (main asyncio loop) and
+remote WebRTC clients routed through :class:`CentralSignalingRelay`
+(its own thread + event loop). These tests exercise the state-machine
+rules in isolation — no relay, no subprocess.
+
+Integration with the relay is not covered here; it requires mocking
+the relay's thread event loop and is tracked as tech debt.
+"""
+
+from __future__ import annotations
+
+import asyncio
+
+import pytest
+
+from reachy_mini.daemon.robot_app_lock import RobotAppLock, RobotAppLockState
+
+# ---------------------------------------------------------------------------
+# Starting state
+# ---------------------------------------------------------------------------
+
+
+def test_starts_free() -> None:
+    """A fresh lock is free and has no holder."""
+    lock = RobotAppLock()
+    status = lock.status()
+    assert status.state == RobotAppLockState.FREE
+    assert status.holder_name is None
+
+
+# ---------------------------------------------------------------------------
+# Local acquire / release
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_local_acquire_from_free() -> None:
+    """Acquiring local from free transitions to local_app with the given name."""
+    lock = RobotAppLock()
+    await lock.acquire_local_evicting_remote("app_a")
+    status = lock.status()
+    assert status.state == RobotAppLockState.LOCAL_APP
+    assert status.holder_name == "app_a"
+
+
+def test_try_local_acquire_from_free() -> None:
+    """A non-evicting local acquire succeeds only when the lock is free."""
+    lock = RobotAppLock()
+    assert lock.try_acquire_local("app_a") is True
+    status = lock.status()
+    assert status.state == RobotAppLockState.LOCAL_APP
+    assert status.holder_name == "app_a"
+
+
+def test_try_local_acquire_refused_while_remote_held() -> None:
+    """A non-evicting local acquire must not displace a remote session."""
+    lock = RobotAppLock()
+    assert lock.try_acquire_remote("remote") is True
+    assert lock.try_acquire_local("app_a") is False
+    status = lock.status()
+    assert status.state == RobotAppLockState.REMOTE_SESSION
+    assert status.holder_name == "remote"
+
+
+@pytest.mark.asyncio
+async def test_local_release_returns_to_free() -> None:
+    """Releasing local returns to free and clears the holder name."""
+    lock = RobotAppLock()
+    await lock.acquire_local_evicting_remote("app_a")
+    lock.release_local("app_a")
+    status = lock.status()
+    assert status.state == RobotAppLockState.FREE
+    assert status.holder_name is None
+
+
+@pytest.mark.asyncio
+async def test_double_local_acquire_raises() -> None:
+    """A second local acquire while a local app holds the lock must raise."""
+    lock = RobotAppLock()
+    await lock.acquire_local_evicting_remote("app_a")
+    with pytest.raises(RuntimeError):
+        await lock.acquire_local_evicting_remote("app_b")
+    # State unchanged after the failed acquire.
+    status = lock.status()
+    assert status.state == RobotAppLockState.LOCAL_APP
+    assert status.holder_name == "app_a"
+
+
+def test_release_local_is_idempotent_when_free() -> None:
+    """Releasing when the lock is already free is a silent no-op."""
+    lock = RobotAppLock()
+    lock.release_local("nonexistent")  # must not raise
+    assert lock.status().state == RobotAppLockState.FREE
+
+
+def test_release_local_is_no_op_when_remote_held() -> None:
+    """Releasing local when a remote session holds the lock must not clear it."""
+    lock = RobotAppLock()
+    assert lock.try_acquire_remote("client1") is True
+    lock.release_local("some_app")
+    status = lock.status()
+    assert status.state == RobotAppLockState.REMOTE_SESSION
+    assert status.holder_name == "client1"
+
+
+@pytest.mark.asyncio
+async def test_release_local_tolerates_holder_mismatch() -> None:
+    """If the release name differs from the current holder, the lock still releases.
+
+    Protects against races after a rapid stop/start cycle where the
+    subprocess monitor's ``finally`` might release under a different
+    app name than the one that actually holds the lock.
+    """
+    lock = RobotAppLock()
+    await lock.acquire_local_evicting_remote("app_a")
+    lock.release_local("not_app_a")  # warning logged, still releases
+    assert lock.status().state == RobotAppLockState.FREE
+
+
+# ---------------------------------------------------------------------------
+# Remote acquire / release
+# ---------------------------------------------------------------------------
+
+
+def test_remote_acquire_from_free() -> None:
+    """Acquiring remote from free transitions to remote_session."""
+    lock = RobotAppLock()
+    assert lock.try_acquire_remote("relay") is True
+    status = lock.status()
+    assert status.state == RobotAppLockState.REMOTE_SESSION
+    assert status.holder_name == "relay"
+
+
+def test_remote_acquire_refused_while_remote_held() -> None:
+    """A second remote acquire must fail; state is unchanged."""
+    lock = RobotAppLock()
+    assert lock.try_acquire_remote("client1") is True
+    assert lock.try_acquire_remote("client2") is False
+    status = lock.status()
+    assert status.state == RobotAppLockState.REMOTE_SESSION
+    assert status.holder_name == "client1"
+
+
+@pytest.mark.asyncio
+async def test_remote_acquire_refused_while_local_held() -> None:
+    """A remote acquire must fail whenever a local app holds the lock."""
+    lock = RobotAppLock()
+    await lock.acquire_local_evicting_remote("app_a")
+    assert lock.try_acquire_remote("client1") is False
+    status = lock.status()
+    assert status.state == RobotAppLockState.LOCAL_APP
+    assert status.holder_name == "app_a"
+
+
+def test_remote_release_returns_to_free() -> None:
+    """Releasing remote returns to free."""
+    lock = RobotAppLock()
+    lock.try_acquire_remote("client1")
+    lock.release_remote()
+    assert lock.status().state == RobotAppLockState.FREE
+
+
+def test_release_remote_is_idempotent_when_free() -> None:
+    """Releasing when the lock is already free is a silent no-op."""
+    lock = RobotAppLock()
+    lock.release_remote()  # must not raise
+    assert lock.status().state == RobotAppLockState.FREE
+
+
+@pytest.mark.asyncio
+async def test_release_remote_is_no_op_when_local_held() -> None:
+    """Releasing remote when a local app holds the lock must not clear it."""
+    lock = RobotAppLock()
+    await lock.acquire_local_evicting_remote("app_a")
+    lock.release_remote()
+    status = lock.status()
+    assert status.state == RobotAppLockState.LOCAL_APP
+    assert status.holder_name == "app_a"
+
+
+# ---------------------------------------------------------------------------
+# Eviction: local acquire while a remote session holds the lock
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_local_acquire_evicts_remote_and_invokes_handler() -> None:
+    """Local acquire atomically evicts a remote session and runs the handler."""
+    lock = RobotAppLock()
+    assert lock.try_acquire_remote("client1") is True
+
+    calls: list[str] = []
+
+    async def handler() -> None:
+        # When the handler fires, the state must already be LOCAL_APP so
+        # any incoming remote startSession is rejected. This is the
+        # atomicity guarantee we want to verify.
+        calls.append(f"state={lock.status().state.value}")
+
+    lock.set_remote_eviction_handler(handler)
+    await lock.acquire_local_evicting_remote("app_a")
+
+    assert calls == ["state=local_app"]
+    status = lock.status()
+    assert status.state == RobotAppLockState.LOCAL_APP
+    assert status.holder_name == "app_a"
+
+
+@pytest.mark.asyncio
+async def test_handler_not_invoked_when_acquiring_from_free() -> None:
+    """No remote session to evict → handler must not run."""
+    lock = RobotAppLock()
+
+    called = asyncio.Event()
+
+    async def handler() -> None:
+        called.set()
+
+    lock.set_remote_eviction_handler(handler)
+    await lock.acquire_local_evicting_remote("app_a")
+
+    # Give the event loop a turn in case the handler was scheduled.
+    await asyncio.sleep(0)
+    assert not called.is_set()
+
+
+@pytest.mark.asyncio
+async def test_handler_exception_is_swallowed_and_state_is_local() -> None:
+    """If the eviction handler raises, the state still transitions to local_app.
+
+    The handler is best-effort: once the lock is in ``local_app``, the
+    relay will reject new remote sessions regardless, so a failed
+    tear-down does not undo the acquire.
+    """
+    lock = RobotAppLock()
+    assert lock.try_acquire_remote("client1") is True
+
+    async def handler() -> None:
+        raise RuntimeError("simulated tear-down failure")
+
+    lock.set_remote_eviction_handler(handler)
+
+    # Must not propagate the handler's exception.
+    await lock.acquire_local_evicting_remote("app_a")
+    status = lock.status()
+    assert status.state == RobotAppLockState.LOCAL_APP
+    assert status.holder_name == "app_a"
+
+
+@pytest.mark.asyncio
+async def test_clearing_handler_disables_eviction_callback() -> None:
+    """Passing ``None`` to ``set_remote_eviction_handler`` clears it."""
+    lock = RobotAppLock()
+    assert lock.try_acquire_remote("client1") is True
+
+    called = False
+
+    async def handler() -> None:
+        nonlocal called
+        called = True
+
+    lock.set_remote_eviction_handler(handler)
+    lock.set_remote_eviction_handler(None)
+    await lock.acquire_local_evicting_remote("app_a")
+    assert called is False
+
+
+def test_keep_remote_acquire_does_not_evict() -> None:
+    """acquire_local_keeping_remote takes the slot without firing eviction."""
+    lock = RobotAppLock()
+    evicted: list[bool] = []
+
+    async def handler() -> None:
+        evicted.append(True)
+
+    lock.set_remote_eviction_handler(handler)
+    assert lock.try_acquire_remote("remote") is True
+
+    lock.acquire_local_keeping_remote("conv")
+
+    assert lock.status().state == RobotAppLockState.LOCAL_APP
+    assert lock.status().holder_name == "conv"
+    assert evicted == []  # the remote (control) session was kept, not evicted
+
+
+def test_keep_remote_acquire_from_free() -> None:
+    """It also works from the free state (no remote session held)."""
+    lock = RobotAppLock()
+    lock.acquire_local_keeping_remote("conv")
+    assert lock.status().state == RobotAppLockState.LOCAL_APP
+
+
+def test_keep_remote_acquire_raises_if_local_held() -> None:
+    """A second local app can't take the slot, keep_remote or not."""
+    lock = RobotAppLock()
+    lock.acquire_local_keeping_remote("a")
+    with pytest.raises(RuntimeError):
+        lock.acquire_local_keeping_remote("b")
+
+
+# ---------------------------------------------------------------------------
+# Became-free handler: daemon-side idle reset trigger
+# ---------------------------------------------------------------------------
+
+
+def test_became_free_handler_fires_on_remote_release() -> None:
+    """Releasing a remote session fires the FREE-transition handler once."""
+    lock = RobotAppLock()
+    calls: list[str] = []
+    lock.set_on_became_free_handler(lambda _handoff: calls.append("free"))
+
+    assert lock.try_acquire_remote("client1") is True
+    assert calls == []  # acquiring must not fire it
+    lock.release_remote()
+    assert calls == ["free"]
+
+
+def test_became_free_handler_fires_on_local_release() -> None:
+    """Releasing a local app fires the FREE-transition handler once."""
+    lock = RobotAppLock()
+    calls: list[str] = []
+    lock.set_on_became_free_handler(lambda _handoff: calls.append("free"))
+
+    assert lock.try_acquire_local("app_a") is True
+    lock.release_local("app_a")
+    assert calls == ["free"]
+
+
+def test_became_free_handler_reports_handoff_intent() -> None:
+    """The FREE handler must be able to tell a hand-off from a plain drop.
+
+    A deliberate ``endSession`` usually means a successor session is on its way
+    in, so the daemon waits much longer before reclaiming the robot; a drop
+    gets the short debounce. Local exits are never hand-offs.
+    """
+    lock = RobotAppLock()
+    seen: list[bool] = []
+    lock.set_on_became_free_handler(seen.append)
+
+    lock.try_acquire_remote("client1")
+    lock.release_remote(expect_handoff=True)
+    assert seen == [True]
+
+    lock.try_acquire_remote("client2")
+    lock.release_remote()
+    assert seen == [True, False]
+
+    lock.try_acquire_local("app_a")
+    lock.release_local("app_a")
+    assert seen == [True, False, False]
+
+
+def test_became_free_handler_sees_free_state() -> None:
+    """When the handler runs, the lock is already FREE (post-transition)."""
+    lock = RobotAppLock()
+    seen: list[RobotAppLockState] = []
+    lock.set_on_became_free_handler(lambda _handoff: seen.append(lock.status().state))
+
+    lock.try_acquire_remote("client1")
+    lock.release_remote()
+    assert seen == [RobotAppLockState.FREE]
+
+
+def test_became_free_handler_not_fired_on_noop_release() -> None:
+    """A release that doesn't actually free the slot must not fire the handler."""
+    lock = RobotAppLock()
+    calls: list[str] = []
+    lock.set_on_became_free_handler(lambda _handoff: calls.append("free"))
+
+    # No hold at all: release is a no-op.
+    lock.release_remote()
+    lock.release_local("nobody")
+    assert calls == []
+
+    # Remote held, but release_local must not free it.
+    lock.try_acquire_remote("client1")
+    lock.release_local("some_app")
+    assert calls == []
+
+
+@pytest.mark.asyncio
+async def test_became_free_handler_not_fired_on_eviction() -> None:
+    """Evicting a remote for a local app goes REMOTE→LOCAL, never through FREE."""
+    lock = RobotAppLock()
+    calls: list[str] = []
+    lock.set_on_became_free_handler(lambda _handoff: calls.append("free"))
+
+    assert lock.try_acquire_remote("client1") is True
+    await lock.acquire_local_evicting_remote("app_a")
+    assert calls == []
+
+
+def test_became_free_handler_exception_is_swallowed() -> None:
+    """A raising FREE handler must not break the release path."""
+    lock = RobotAppLock()
+
+    def handler(expect_handoff: bool) -> None:
+        raise RuntimeError("boom")
+
+    lock.set_on_became_free_handler(handler)
+    lock.try_acquire_remote("client1")
+    lock.release_remote()  # must not raise
+    assert lock.status().state == RobotAppLockState.FREE
+
+
+def test_clearing_became_free_handler_disables_it() -> None:
+    """Passing ``None`` clears the FREE-transition handler."""
+    lock = RobotAppLock()
+    calls: list[str] = []
+    lock.set_on_became_free_handler(lambda _handoff: calls.append("free"))
+    lock.set_on_became_free_handler(None)
+
+    lock.try_acquire_remote("client1")
+    lock.release_remote()
+    assert calls == []
+
+
+# ---------------------------------------------------------------------------
+# Remote-acquired handler: daemon-side idle-reset cancellation
+# ---------------------------------------------------------------------------
+
+
+def test_remote_acquired_handler_fires_on_successful_acquire() -> None:
+    """A successful remote acquire fires the handler once, post-transition.
+
+    This is what cancels a pending handoff-grace idle reset the moment a
+    successor takes the slot, instead of waiting for its first data-channel
+    command.
+    """
+    lock = RobotAppLock()
+    seen: list[RobotAppLockState] = []
+    lock.set_on_remote_acquired_handler(lambda: seen.append(lock.status().state))
+
+    assert lock.try_acquire_remote("client1") is True
+    assert seen == [RobotAppLockState.REMOTE_SESSION]
+
+
+def test_remote_acquired_handler_not_fired_on_refused_acquire() -> None:
+    """A refused acquire (slot already held) must not fire the handler."""
+    lock = RobotAppLock()
+    assert lock.try_acquire_remote("client1") is True
+
+    calls: list[str] = []
+    lock.set_on_remote_acquired_handler(lambda: calls.append("acquired"))
+
+    assert lock.try_acquire_remote("client2") is False
+    assert calls == []
+
+
+def test_remote_acquired_handler_not_fired_on_local_acquire() -> None:
+    """Local-app acquisition must not fire the remote-acquired hook.
+
+    It has its own cancel path (``AppManager.start_app`` calls
+    ``backend.cancel_idle_reset()`` directly).
+    """
+    lock = RobotAppLock()
+    calls: list[str] = []
+    lock.set_on_remote_acquired_handler(lambda: calls.append("acquired"))
+
+    assert lock.try_acquire_local("app_a") is True
+    assert calls == []
+
+
+def test_remote_acquired_handler_exception_is_swallowed() -> None:
+    """A raising handler must not break (or undo) the acquire."""
+    lock = RobotAppLock()
+
+    def handler() -> None:
+        raise RuntimeError("boom")
+
+    lock.set_on_remote_acquired_handler(handler)
+    assert lock.try_acquire_remote("client1") is True
+    assert lock.status().state == RobotAppLockState.REMOTE_SESSION

@@ -1,0 +1,938 @@
+"""Daemon entry point for the Reachy Mini robot.
+
+This script serves as the command-line interface (CLI) entry point for the Reachy Mini daemon.
+It initializes the daemon with specified parameters such as simulation mode, serial port,
+scene to load, and logging level. The daemon runs indefinitely, handling requests and
+managing the robot's state.
+
+"""
+
+import argparse
+import asyncio
+import logging
+import sys
+import types
+from contextlib import asynccontextmanager
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Any, AsyncGenerator
+
+import uvicorn
+from fastapi import APIRouter, FastAPI
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import HTMLResponse
+
+from reachy_mini.apps.manager import AppManager
+from reachy_mini.apps.sources.hf_auth import adopt_legacy_login
+from reachy_mini.daemon import startup_app_config
+from reachy_mini.daemon.app.middleware import (
+    ClientTelemetryMiddleware,
+    LocalNetworkGuardMiddleware,
+    MaxBodySizeMiddleware,
+)
+from reachy_mini.daemon.app.routers import (
+    apps,
+    audio_config,
+    camera,
+    daemon,
+    hf_auth,
+    kinematics,
+    logs,
+    media,
+    motors,
+    move,
+    sdk_ws,
+    state,
+    telemetry,
+    volume,
+)
+from reachy_mini.daemon.app.startup_app import (
+    ensure_startup_app_installed,
+    make_startup_app_launcher,
+    watch_antennas_for_startup_app,
+)
+from reachy_mini.daemon.daemon import Daemon
+from reachy_mini.daemon.telemetry import telemetry as daemon_telemetry
+from reachy_mini.daemon.utils import SimulationMode
+from reachy_mini.media.audio_utils import (
+    check_reachymini_asoundrc,
+    write_asoundrc_to_home,
+)
+from reachy_mini.motion.recorded_move import preload_default_datasets
+from reachy_mini.utils.discovery import MdnsServiceRegistration
+from reachy_mini.utils.wireless_version.startup_check import (
+    run_wireless_startup_checks,
+)
+
+logger = logging.getLogger(__name__)
+
+# Origins allowed to call the unauthenticated API cross-origin: localhost tooling
+# plus the native app webview schemes (Tauri/Capacitor), which a browser cannot
+# forge, so the drive-by protection of GHSA-p4cp-8gwf-3fgv holds.
+CORS_ORIGIN_REGEX = r"(https?://(localhost|127\.0\.0\.1)(:\d+)?|tauri://localhost|https?://tauri\.localhost|capacitor://localhost)"
+
+
+@dataclass
+class Args:
+    """Arguments for configuring the Reachy Mini daemon."""
+
+    log_level: str = "INFO"
+    log_file: str | None = None
+
+    wireless_version: bool = False
+    desktop_app_daemon: bool = False
+
+    serialport: str = "auto"
+    hardware_config_filepath: str | None = None
+
+    sim: bool = False
+    mockup_sim: bool = False
+    scene: str = "empty"
+    headless: bool = False
+    no_media: bool = False
+
+    kinematics_engine: str = "AnalyticalKinematics"
+    check_collision: bool = False
+
+    autostart: bool = True
+    timeout_health_check: float | None = None
+
+    wake_up_on_start: bool = True
+    goto_sleep_on_stop: bool = True
+    preload_datasets: bool = False
+    dataset_update_interval_hours: float = 24.0  # 0 to disable periodic updates
+
+    robot_name: str = "reachy_mini"
+
+    # None means "auto": bind 0.0.0.0 on the wireless version (must be reachable
+    # over Wi-Fi) and 127.0.0.1 everywhere else. See _resolve_bind_host().
+    fastapi_host: str | None = None
+    fastapi_port: int = 8000
+
+
+def _resolve_bind_host(args: Args) -> str:
+    """Resolve the address the HTTP API binds to.
+
+    An explicit ``--fastapi-host`` always wins. Otherwise the daemon binds all
+    interfaces only on the wireless version (the robot has to be reachable on
+    the LAN); every other configuration (Lite, desktop, simulation) stays on
+    loopback so the unauthenticated API is not exposed to the network.
+    """
+    if args.fastapi_host:
+        return args.fastapi_host
+    return "0.0.0.0" if args.wireless_version else "127.0.0.1"
+
+
+def create_app(args: Args, health_check_event: asyncio.Event | None = None) -> FastAPI:
+    """Create and configure the FastAPI application."""
+
+    @asynccontextmanager
+    async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
+        """Lifespan context manager for the FastAPI application."""
+        args = app.state.args  # type: Args
+        # The JSON-RPC app relay must not be scheduled onto whichever loop
+        # `Daemon.start` runs on: over HTTP that is a background job's
+        # throwaway loop. This one owns the app and lives as long as the
+        # process.
+        app.state.daemon.set_rpc_loop(asyncio.get_running_loop())
+        dataset_updater_task: asyncio.Task[None] | None = None
+        # Held on app.state so the /apps/startup-app endpoint can re-arm it live.
+        app.state.startup_app_antenna_watcher_task = None
+
+        mdns = MdnsServiceRegistration(
+            args.robot_name,
+            args.fastapi_port,
+            wireless_version=args.wireless_version,
+        )
+        # Exposed on app.state so the `/api/daemon/robot-name` route can
+        # re-advertise the LAN record live on a rename (BLE setup path).
+        app.state.mdns = mdns
+
+        def preload_with_logging() -> None:
+            """Download datasets with logging."""
+            try:
+                preload_default_datasets(token=False)
+                logger.info("Recorded move datasets pre-loaded successfully")
+            except Exception as e:
+                logger.warning(f"Failed to pre-load some datasets: {e}")
+
+        async def dataset_updater(interval_hours: float) -> None:
+            """Background task that periodically checks for dataset updates."""
+            interval_seconds = interval_hours * 3600
+            while True:
+                try:
+                    await asyncio.sleep(interval_seconds)
+                    logger.info("Checking for dataset updates...")
+                    loop = asyncio.get_event_loop()
+                    await loop.run_in_executor(None, preload_with_logging)
+                except asyncio.CancelledError:
+                    logger.info("Dataset updater task cancelled")
+                    break
+                except Exception as e:
+                    logger.warning(f"Error in dataset updater: {e}")
+
+        # Pre-download recorded move datasets in background to avoid delays on first play
+        # This runs in asyncio's default ThreadPoolExecutor (fire and forget)
+        if args.preload_datasets:
+            loop = asyncio.get_event_loop()
+            loop.run_in_executor(None, preload_with_logging)
+
+        # Start periodic dataset updater if enabled (interval > 0)
+        if args.dataset_update_interval_hours > 0:
+            dataset_updater_task = asyncio.create_task(
+                dataset_updater(args.dataset_update_interval_hours)
+            )
+            logger.info(
+                f"Dataset updater started (interval: {args.dataset_update_interval_hours}h)"
+            )
+
+        try:
+            # Install the startup app (if missing) before waking the robot, so a
+            # long download/install doesn't leave it awake and idle. The wireless
+            # unit boots asleep (--no-wake-up-on-start), so the app is started by
+            # a one-shot hook on the first wake-up rather than here.
+            on_wake_up_callback = None
+            startup_app = startup_app_config.get_startup_app()
+            startup_app_ready = False
+            if args.autostart and startup_app:
+                if await ensure_startup_app_installed(
+                    app.state.app_manager, startup_app
+                ):
+                    startup_app_ready = True
+                    on_wake_up_callback = make_startup_app_launcher(
+                        app.state.app_manager, startup_app
+                    )
+
+            if args.autostart:
+                await app.state.daemon.start(
+                    serialport=args.serialport,
+                    sim=args.sim,
+                    mockup_sim=args.mockup_sim,
+                    scene=args.scene,
+                    headless=args.headless,
+                    use_audio=not args.no_media,
+                    kinematics_engine=args.kinematics_engine,
+                    check_collision=args.check_collision,
+                    wake_up_on_start=args.wake_up_on_start,
+                    hardware_config_filepath=args.hardware_config_filepath,
+                    on_wake_up_callback=on_wake_up_callback,
+                )
+
+            if (
+                args.autostart
+                and startup_app
+                and startup_app_ready
+                and app.state.daemon.backend is not None
+            ):
+                app.state.startup_app_antenna_watcher_task = asyncio.create_task(
+                    watch_antennas_for_startup_app(
+                        app.state.app_manager,
+                        app.state.daemon,
+                        startup_app,
+                    )
+                )
+                logger.info(
+                    f"Startup app antenna watcher started for app: {startup_app}"
+                )
+
+            # Register mDNS service only after the daemon is ready
+            mdns.register()
+
+            daemon_telemetry.start(
+                form_factor=(
+                    "mujoco"
+                    if args.sim
+                    else "mockup"
+                    if args.mockup_sim
+                    else "wireless"
+                    if args.wireless_version
+                    else "lite"
+                ),
+                desktop_app_daemon=args.desktop_app_daemon,
+            )
+
+            # Wire the live rename hook now that both the daemon (relay +
+            # status) and the mDNS registration exist. A `set_robot_name`
+            # command then applies without a restart: daemon status + central
+            # relay (via apply_robot_name) and the LAN mDNS record (re-register).
+            daemon_instance = app.state.daemon
+            if daemon_instance.backend is not None:
+
+                def _apply_robot_name_live(
+                    name: str,
+                    _daemon: Daemon = daemon_instance,
+                    _mdns: MdnsServiceRegistration = mdns,
+                ) -> None:
+                    _daemon.apply_robot_name(name)
+                    _mdns.update_name(name)
+
+                daemon_instance.backend.set_robot_name_callback(_apply_robot_name_live)
+
+            yield
+        finally:
+            # Cancel dataset updater task if running
+            if dataset_updater_task and not dataset_updater_task.done():
+                dataset_updater_task.cancel()
+                try:
+                    await dataset_updater_task
+                except asyncio.CancelledError:
+                    pass
+
+            # Cancel startup app antenna watcher before closing the app manager.
+            antenna_watcher_task = app.state.startup_app_antenna_watcher_task
+            if antenna_watcher_task and not antenna_watcher_task.done():
+                antenna_watcher_task.cancel()
+                try:
+                    await antenna_watcher_task
+                except asyncio.CancelledError:
+                    pass
+
+            # Unregister mDNS service
+            mdns.unregister()
+
+            # Ensure cleanup happens even if there's an exception
+            try:
+                logger.info("Shutting down app manager...")
+                await app.state.app_manager.close()
+            except Exception as e:
+                logger.exception(f"Error closing app manager: {e}")
+
+            try:
+                logger.info("Shutting down daemon...")
+                await app.state.daemon.stop(
+                    goto_sleep_on_stop=args.goto_sleep_on_stop,
+                )
+            except Exception as e:
+                logger.exception(f"Error stopping daemon: {e}")
+
+            # Last, so app_stopped events from the shutdown above are flushed.
+            await asyncio.to_thread(daemon_telemetry.stop)
+
+    app = FastAPI(
+        lifespan=lifespan,
+    )
+
+    app.state.args = args
+    sim_mode = (
+        SimulationMode.MUJOCO
+        if args.sim
+        else SimulationMode.MOCKUP
+        if args.mockup_sim
+        else SimulationMode.NONE
+    )
+    app.state.daemon = Daemon(
+        robot_name=args.robot_name,
+        wireless_version=args.wireless_version,
+        desktop_app_daemon=args.desktop_app_daemon,
+        log_level=args.log_level,
+        no_media=args.no_media,
+        sim_mode=sim_mode,
+    )
+    app.state.app_manager = AppManager(
+        wireless_version=args.wireless_version,
+        desktop_app_daemon=args.desktop_app_daemon,
+        daemon=app.state.daemon,
+    )
+    # Give the daemon a handle back to the app manager so `Daemon.start` can
+    # wire the JSON-RPC app relay (apps.* + conversation.* over the DataChannel).
+    app.state.daemon.app_manager = app.state.app_manager
+
+    router = APIRouter(prefix="/api")
+    router.include_router(apps.router)
+    router.include_router(audio_config.router)
+    router.include_router(camera.router)
+    router.include_router(daemon.router)
+    router.include_router(hf_auth.router)
+    router.include_router(kinematics.router)
+    router.include_router(media.router)
+    router.include_router(motors.router)
+    router.include_router(move.router)
+    router.include_router(state.router)
+    router.include_router(telemetry.router)
+    router.include_router(volume.router)
+
+    if args.wireless_version:
+        from .routers import cache, update, wifi_config
+
+        app.include_router(cache.router)
+        app.include_router(logs.router)
+        app.include_router(update.router)
+        app.include_router(wifi_config.router)
+
+    app.include_router(router)
+    app.include_router(sdk_ws.router)
+
+    if health_check_event is not None:
+
+        @app.post("/health-check")
+        async def health_check() -> dict[str, str]:
+            """Health check endpoint to reset the health check timer."""
+            health_check_event.set()
+            return {"status": "ok"}
+
+    # Innermost, so requests rejected by the guards below are not counted.
+    app.add_middleware(ClientTelemetryMiddleware)
+
+    # Cap the size of sound uploads before the body is read, so a large file
+    # cannot be streamed to disk (see GHSA-m2pc-3q4q-w6jr). Added before CORS
+    # so CORS remains the outermost middleware and even a 413 carries its
+    # headers.
+    app.add_middleware(
+        MaxBodySizeMiddleware,
+        max_body_size=media.MAX_SOUND_UPLOAD_BYTES,
+        paths={"/api/media/sounds/upload"},
+    )
+
+    # Block DNS rebinding and preflight-free cross-site writes against the
+    # unauthenticated API (CAN-2026-2032024): validates the Host header on all
+    # requests and the Origin header on state-changing ones. Added before CORS
+    # so CORS stays outermost and rejections for allowed origins carry its
+    # headers; requests without an Origin (curl, SDK, native apps) pass through.
+    app.add_middleware(LocalNetworkGuardMiddleware)
+
+    # Restrict cross-origin access to local browser tooling and the native app
+    # webviews (see CORS_ORIGIN_REGEX); everything else is same-origin or WebRTC.
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origin_regex=CORS_ORIGIN_REGEX,
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )
+
+    STICKER_BASE = "https://huggingface.co/spaces/tfrere/reachy-sticker-generator/resolve/main/examples"
+    COMMUNITY_BASE = "https://tfrere-reachy-sticker-generator.hf.space/api/community"
+
+    REDIRECT_HTML = f"""\
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Reachy Mini Dashboard - Deprecated</title>
+    <style>
+        * {{ margin: 0; padding: 0; box-sizing: border-box; }}
+        body {{
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background-color: #fffbeb;
+            min-height: 100vh;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            overflow: hidden;
+            position: relative;
+        }}
+        .sticker {{
+            position: absolute;
+            opacity: 0.18;
+            pointer-events: none;
+            z-index: 0;
+        }}
+        .sticker-1 {{ top: -30px; left: -20px; width: 220px; transform: rotate(-15deg); }}
+        .sticker-2 {{ bottom: -20px; right: -30px; width: 200px; transform: rotate(12deg); }}
+        .sticker-3 {{ top: 10%; right: 5%; width: 160px; transform: rotate(20deg); }}
+        .sticker-4 {{ bottom: 15%; left: 3%; width: 170px; transform: rotate(-10deg); }}
+        .sticker-5 {{ top: 50%; left: 8%; width: 140px; transform: rotate(8deg) translateY(-50%); }}
+        .sticker-6 {{ top: 5%; left: 40%; width: 130px; transform: rotate(-5deg); }}
+        .card {{
+            position: relative;
+            z-index: 1;
+            background: #fff;
+            border: 2px solid #fcd34d;
+            border-radius: 20px;
+            padding: 48px 40px;
+            max-width: 460px;
+            text-align: center;
+            box-shadow: 0 8px 30px rgba(0, 0, 0, 0.08);
+        }}
+        .reachy-img {{
+            width: 200px;
+            margin: 0 auto 20px;
+            filter: drop-shadow(0 4px 8px rgba(0,0,0,0.1));
+        }}
+        h1 {{
+            color: #92400e;
+            font-size: 24px;
+            margin-bottom: 12px;
+            font-weight: 700;
+        }}
+        p {{
+            color: #6b7280;
+            font-size: 15px;
+            line-height: 1.6;
+            margin-bottom: 24px;
+        }}
+        .btn {{
+            display: inline-block;
+            padding: 14px 32px;
+            font-size: 16px;
+            font-weight: 600;
+            color: #fff;
+            background: linear-gradient(135deg, #f59e0b, #d97706);
+            border-radius: 12px;
+            text-decoration: none;
+            transition: transform 0.2s, box-shadow 0.2s;
+            box-shadow: 0 4px 12px rgba(217, 119, 6, 0.3);
+        }}
+        .btn:hover {{
+            transform: translateY(-2px);
+            box-shadow: 0 6px 20px rgba(217, 119, 6, 0.4);
+        }}
+    </style>
+</head>
+<body>
+    <img class="sticker sticker-1" src="{STICKER_BASE}/astronaut.png" alt="">
+    <img class="sticker sticker-2" src="{STICKER_BASE}/cowboy.png" alt="">
+    <img class="sticker sticker-3" src="{STICKER_BASE}/magician.png" alt="">
+    <img class="sticker sticker-4" src="{STICKER_BASE}/explorer.png" alt="">
+    <img class="sticker sticker-5" src="{STICKER_BASE}/cooking-chief.png" alt="">
+    <img class="sticker sticker-6" src="{STICKER_BASE}/hacker.png" alt="">
+
+    <div class="card">
+        <img class="reachy-img" src="{COMMUNITY_BASE}/c8afc0207cb7.svg" alt="Reachy Mini construction worker">
+        <h1>Web Dashboard Deprecated</h1>
+        <p>
+            The web dashboard has been replaced by the
+            <strong>Reachy Mini Control</strong> desktop app,
+            which offers a better experience with more features.
+        </p>
+        <a class="btn" href="https://pollen-robotics-reachy-mini.hf.space/download">
+            Download the app
+        </a>
+    </div>
+</body>
+</html>"""
+
+    @app.get("/")
+    async def dashboard() -> HTMLResponse:
+        """Redirect to the desktop app download page."""
+        return HTMLResponse(content=REDIRECT_HTML)
+
+    if args.wireless_version:
+
+        @app.get("/settings")
+        async def settings() -> HTMLResponse:
+            """Redirect to the desktop app download page."""
+            return HTMLResponse(content=REDIRECT_HTML)
+
+        @app.get("/logs")
+        async def logs_page() -> HTMLResponse:
+            """Redirect to the desktop app download page."""
+            return HTMLResponse(content=REDIRECT_HTML)
+
+    return app
+
+
+def configure_root_logging(log_level: str, log_file: str | None = None) -> None:
+    """Install the daemon's log handlers on the root logger.
+
+    Call this before anything that logs, in particular before the wireless
+    startup checks: an unconfigured root logger sits at its WARNING default
+    with no handlers, so every INFO emitted before this point is discarded
+    and every WARNING falls back to logging.lastResort.
+
+    stderr is what systemd captures into the journal. A log file, when asked
+    for, is added alongside rather than instead.
+    """
+    formatter = logging.Formatter("%(name)s - %(levelname)s - %(message)s")
+
+    root_logger = logging.getLogger()
+    root_logger.setLevel(log_level)
+    # Drop anything a library installed at import time, then own the config.
+    root_logger.handlers.clear()
+
+    logging.getLogger("uvicorn.access").addFilter(access_log_filter)
+    logging.getLogger("huggingface_hub.utils._auth").addFilter(_hub_auth_log_filter)
+
+    # Handler that writes to stderr with immediate flush
+    handler = logging.StreamHandler(sys.stderr)
+    handler.setLevel(log_level)
+    handler.setFormatter(formatter)
+    root_logger.addHandler(handler)
+
+    if log_file:
+        file_handler = logging.FileHandler(log_file, mode="a")
+        file_handler.setFormatter(formatter)
+        root_logger.addHandler(file_handler)
+
+
+_POLLING_PATHS = ("/health-check", "/api/hf-auth/relay-status")
+_OAUTH_CALLBACK_PATH = "/api/hf-auth/oauth/callback"
+
+# Hub embeds provider text or stored token lines in these messages.
+_HUB_AUTH_REDACTIONS = {
+    "_refresh_oauth_token_if_needed": "Hugging Face credential refresh failed",
+    "_warn_refresh_failure_once": "Hugging Face credential refresh failed",
+    "_read_stored_tokens_full": "Could not parse the stored Hugging Face tokens file",
+}
+
+
+def _hub_auth_log_filter(record: logging.LogRecord) -> bool:
+    message = _HUB_AUTH_REDACTIONS.get(record.funcName)
+    if record.levelno >= logging.WARNING and message:
+        record.msg = message
+        record.args = ()
+        record.exc_info = record.exc_text = record.stack_info = None
+    return True
+
+
+def access_log_filter(record: logging.LogRecord) -> bool:
+    """Redact OAuth codes and lower polling log levels."""
+    args = record.args
+    if not isinstance(args, tuple) or len(args) < 3 or not isinstance(args[2], str):
+        return True
+    path, separator, _ = args[2].partition("?")
+    normalized_path = path.rstrip("/")
+    if normalized_path == _OAUTH_CALLBACK_PATH and separator:
+        record.args = (*args[:2], path + "?<redacted>", *args[3:])
+    if normalized_path in _POLLING_PATHS:
+        record.levelno = logging.DEBUG
+        record.levelname = "DEBUG"
+    return True
+
+
+def run_app(args: Args) -> None:
+    """Run the FastAPI app with Uvicorn."""
+    # Handlers are installed by configure_root_logging() in main(), before the
+    # startup checks; this is only the handle used by the hooks below.
+    root_logger = logging.getLogger()
+
+    # Surface a persisted rename so an operator isn't puzzled when the
+    # advertised name differs from the --robot-name they passed.
+    from reachy_mini.utils.robot_name import get_robot_name as _get_persisted_name
+
+    if _get_persisted_name():
+        logger.info(
+            "Robot name %r comes from a persisted rename and overrides the "
+            "--robot-name default.",
+            args.robot_name,
+        )
+
+    # Explicitly configure the apps.manager logger to ensure propagation
+    apps_logger = logging.getLogger("reachy_mini.apps.manager")
+    apps_logger.setLevel(args.log_level)
+    apps_logger.propagate = True  # Ensure it propagates to root logger
+
+    # Install exception hook to catch uncaught exceptions
+    def exception_hook(
+        exc_type: type[BaseException],
+        exc_value: BaseException,
+        exc_traceback: types.TracebackType | None,
+    ) -> None:
+        """Log uncaught exceptions with full traceback."""
+        if issubclass(exc_type, KeyboardInterrupt):
+            # Allow KeyboardInterrupt to exit normally
+            sys.__excepthook__(exc_type, exc_value, exc_traceback)
+            return
+
+        root_logger.critical(
+            "Uncaught exception", exc_info=(exc_type, exc_value, exc_traceback)
+        )
+        sys.stderr.flush()
+
+    sys.excepthook = exception_hook
+
+    async def run_server() -> None:
+        # Set up asyncio exception handler to catch unhandled task exceptions
+        loop = asyncio.get_running_loop()
+
+        def asyncio_exception_handler(
+            loop: asyncio.AbstractEventLoop, context: dict[str, Any]
+        ) -> None:
+            """Handle exceptions in asyncio tasks."""
+            exception = context.get("exception")
+            if exception:
+                root_logger.error(
+                    f"Unhandled exception in asyncio task: {context.get('message', 'No message')}",
+                    exc_info=(type(exception), exception, exception.__traceback__),
+                )
+            else:
+                root_logger.error(f"Asyncio error: {context}")
+            sys.stderr.flush()
+
+        loop.set_exception_handler(asyncio_exception_handler)
+
+        health_check_event = asyncio.Event()
+        app = create_app(args, health_check_event)
+
+        config = uvicorn.Config(
+            app,
+            host=_resolve_bind_host(args),
+            port=args.fastapi_port,
+            log_config=None,  # Don't override Python logging configuration
+        )
+        server = uvicorn.Server(config)
+
+        health_check_task = None
+
+        async def health_check_timeout(timeout_seconds: float) -> None:
+            while True:
+                try:
+                    await asyncio.wait_for(
+                        health_check_event.wait(),
+                        timeout=timeout_seconds,
+                    )
+                    health_check_event.clear()
+                except asyncio.TimeoutError:
+                    logger.warning("Health check timeout reached, stopping app.")
+                    server.should_exit = True
+                    break
+                except asyncio.CancelledError:
+                    logger.info("Health check task cancelled.")
+                    break
+
+        try:
+            if args.timeout_health_check is not None:
+                health_check_task = asyncio.create_task(
+                    health_check_timeout(args.timeout_health_check)
+                )
+            await server.serve()
+        except KeyboardInterrupt:
+            logger.info("Received Ctrl-C, shutting down gracefully.")
+        except Exception as e:
+            logger.exception(f"Error during server operation: {e}")
+            raise
+        finally:
+            # Cancel health check task if it exists
+            if health_check_task and not health_check_task.done():
+                health_check_task.cancel()
+                try:
+                    await health_check_task
+                except asyncio.CancelledError:
+                    pass
+
+    try:
+        asyncio.run(run_server())
+    except KeyboardInterrupt:
+        logger.info("Shutdown complete.")
+    except Exception as e:
+        logger.exception(f"Error during shutdown: {e}")
+        sys.stderr.flush()
+        raise
+
+
+def main() -> None:
+    """Run the FastAPI app with Uvicorn."""
+    default_args = Args()
+
+    parser = argparse.ArgumentParser(description="Run the Reachy Mini daemon.")
+    parser.add_argument(
+        "--wireless-version",
+        action="store_true",
+        default=default_args.wireless_version,
+        help="Use the wireless version of Reachy Mini (default: False).",
+    )
+    parser.add_argument(
+        "--desktop-app-daemon",
+        action="store_true",
+        default=default_args.desktop_app_daemon,
+        help="Use the desktop version of Reachy Mini (default: False).",
+    )
+
+    parser.add_argument(
+        "--robot-name",
+        type=str,
+        default=default_args.robot_name,
+        help="Name of the robot (default: reachy_mini).",
+    )
+
+    # Real robot mode
+    parser.add_argument(
+        "-p",
+        "--serialport",
+        type=str,
+        default=default_args.serialport,
+        help="Serial port for real motors (default: will try to automatically find the port).",
+    )
+    default_hw_config_path = str(
+        (
+            Path(__file__).parent.parent.parent
+            / "assets"
+            / "config"
+            / "hardware_config.yaml"
+        ).resolve()
+    )
+    parser.add_argument(
+        "--hardware-config-filepath",
+        type=str,
+        default=default_hw_config_path,
+        help=f"Path to the hardware configuration YAML file (default: {default_hw_config_path}).",
+    )
+    # Simulation mode
+    parser.add_argument(
+        "--sim",
+        action="store_true",
+        default=default_args.sim,
+        help="Run in simulation mode using Mujoco.",
+    )
+    parser.add_argument(
+        "--mockup-sim",
+        action="store_true",
+        default=default_args.mockup_sim,
+        help="Run in mockup simulation mode (no MuJoCo required).",
+    )
+    parser.add_argument(
+        "--scene",
+        type=str,
+        default=default_args.scene,
+        help="Name of the scene to load (default: empty)",
+    )
+    parser.add_argument(
+        "--headless",
+        action="store_true",
+        default=default_args.headless,
+        help="Run the daemon in headless mode (default: False).",
+    )
+    parser.add_argument(
+        "--no-media",
+        action="store_true",
+        default=default_args.no_media,
+        help="Disable all media (camera, audio, WebRTC). Use if you handle media yourself.",
+    )
+    # Daemon options
+    parser.add_argument(
+        "--autostart",
+        action="store_true",
+        default=default_args.autostart,
+        help="Automatically start the daemon on launch (default: True).",
+    )
+    parser.add_argument(
+        "--no-autostart",
+        action="store_false",
+        dest="autostart",
+        help="Do not automatically start the daemon on launch (default: False).",
+    )
+    parser.add_argument(
+        "--timeout-health-check",
+        type=float,
+        default=None,
+        help="Set the health check timeout in seconds (default: None).",
+    )
+    parser.add_argument(
+        "--wake-up-on-start",
+        action="store_true",
+        default=default_args.wake_up_on_start,
+        help="Wake up the robot on daemon start (default: True).",
+    )
+    parser.add_argument(
+        "--no-wake-up-on-start",
+        action="store_false",
+        dest="wake_up_on_start",
+        help="Do not wake up the robot on daemon start (default: False).",
+    )
+    parser.add_argument(
+        "--goto-sleep-on-stop",
+        action="store_true",
+        default=default_args.goto_sleep_on_stop,
+        help="Put the robot to sleep on daemon stop (default: True).",
+    )
+    parser.add_argument(
+        "--no-goto-sleep-on-stop",
+        action="store_false",
+        dest="goto_sleep_on_stop",
+        help="Do not put the robot to sleep on daemon stop (default: False).",
+    )
+    parser.add_argument(
+        "--preload-datasets",
+        action="store_true",
+        default=default_args.preload_datasets,
+        help="Pre-download recorded move datasets (emotions, dances) at startup (default: False).",
+    )
+    parser.add_argument(
+        "--no-preload-datasets",
+        action="store_false",
+        dest="preload_datasets",
+        help="Do not pre-download datasets at startup (default: False).",
+    )
+    parser.add_argument(
+        "--dataset-update-interval",
+        type=float,
+        default=default_args.dataset_update_interval_hours,
+        dest="dataset_update_interval_hours",
+        help="Interval in hours for background dataset update checks (default: 24.0, 0 to disable).",
+    )
+    # Kinematics options
+    parser.add_argument(
+        "--check-collision",
+        action="store_true",
+        default=default_args.check_collision,
+        help="Enable collision checking (default: False).",
+    )
+
+    parser.add_argument(
+        "--kinematics-engine",
+        type=str,
+        default=default_args.kinematics_engine,
+        choices=["Placo", "NN", "AnalyticalKinematics"],
+        help="Set the kinematics engine (default: AnalyticalKinematics).",
+    )
+    # FastAPI server options
+    parser.add_argument(
+        "--fastapi-host",
+        type=str,
+        default=default_args.fastapi_host,
+        help=(
+            "Address the HTTP API binds to. Default (unset): 0.0.0.0 on the "
+            "wireless version, 127.0.0.1 otherwise."
+        ),
+    )
+    parser.add_argument(
+        "--fastapi-port",
+        type=int,
+        default=default_args.fastapi_port,
+    )
+    # Logging options
+    parser.add_argument(
+        "--log-level",
+        type=str,
+        default=default_args.log_level,
+        choices=["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"],
+        help="Set the logging level (default: INFO).",
+    )
+    parser.add_argument(
+        "--log-file",
+        type=str,
+        default=default_args.log_file,
+        help="Path to a file to write logs to.",
+    )
+
+    args = parser.parse_args()
+
+    # A name set by a client (e.g. the mobile app over the data channel) is
+    # persisted on the robot and wins over the CLI default so the rename
+    # survives reboots. Fail-safe: falls back to --robot-name on any error.
+    from reachy_mini.utils.robot_name import get_robot_name as get_persisted_robot_name
+
+    persisted_robot_name = get_persisted_robot_name()
+    if persisted_robot_name:
+        args.robot_name = persisted_robot_name
+
+    # Before the startup checks, not after: run_app() used to be the first
+    # thing to configure logging, which left everything logged here going to
+    # an unconfigured root logger (WARNING, no handlers) and silently dropped.
+    configure_root_logging(args.log_level, args.log_file)
+
+    if args.wireless_version:
+        # Startup checks. The expensive ones (full /venvs ownership scan,
+        # apps_venv SDK sync probe, restore-venv pip check) are skipped when
+        # the startup stamp proves nothing changed since the last full run;
+        # the cheap file checks (bluetooth, systemd units) run on every boot.
+        run_wireless_startup_checks()
+        # Before the app starts: the relay signs in to central with this login.
+        adopt_legacy_login()
+
+        if check_reachymini_asoundrc():
+            logging.getLogger().info(
+                "~/.asoundrc correctly configured for Reachy Mini Audio."
+            )
+        else:
+            logging.getLogger().warning(
+                "~/.asoundrc not found or not correctly configured for Reachy Mini Audio. "
+                "Creating a new one."
+            )
+            write_asoundrc_to_home()
+
+    run_app(Args(**vars(args)))
+
+
+if __name__ == "__main__":
+    main()
