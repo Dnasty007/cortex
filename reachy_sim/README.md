@@ -1,33 +1,25 @@
 # Reachy Mini simulation
 
-This directory drives the official Reachy Mini MuJoCo model from a Cortex pack. It does not connect to a physical robot. The same loader, decision engine, and antenna state machine are the interfaces a later build can point at the real robot.
-
-The vendored SDK is `reachy_mini_upstream`. Its pin is `UPSTREAM_HASH.txt` at the repository root. Nothing under that tree is edited.
-
-## Run the MuJoCo demo
-
-MuJoCo is an optional extra of the upstream package (`mujoco==3.3.0`). It is not a required dependency, and this repository does not install it.
-
-From the repository root:
+Launch from the repository root. MuJoCo stays an optional extra of the vendored package. This package does not install it, including in CI.
 
 ```
 pip install -e ".\reachy_mini_upstream[mujoco]"
 python -m reachy_sim.sim_runner --pack <cortex-pack-directory>
 ```
 
-That command starts the official daemon entry point:
+That command starts the official daemon:
 
 ```
 python -m reachy_mini.daemon.app.main --sim --no-media
 ```
 
-`reachy-mini-daemon --sim` is the same entry point after the package is installed. `--no-media` keeps the window on the robot body. The demo then holds each antenna state once across ten seconds and prints three routing decisions:
+The run prints three routing lines:
 
-- a local skill on a fast link stays `local`
-- a local skill with round-trip time above 150 ms and ethernet down goes to `grok_bot`
-- anything else goes to `hermes`
+- `decision local utterance='use the local tripod gait'` means a local skill matched and the link is fine, so the pack answers.
+- `decision grok_bot utterance='walk while the shop link is down'` means a local skill matched, round-trip time is above 150 ms, and ethernet is down, so Grok Bot answers.
+- `decision hermes utterance='ask about the rental license'` means no local skill matched, so Hermes answers.
 
-Without the MuJoCo extra, the same command prints the install step, the three decisions, and the antenna angles. It does not open a robot window.
+Without the MuJoCo extra, the same command prints those lines and the antenna angles. It does not open a robot window. A pack that fails a sha256 check exits non-zero and names the mismatched file.
 
 ## Point the loader at a pack
 

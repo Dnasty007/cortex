@@ -17,7 +17,7 @@ import time
 from pathlib import Path
 
 from reachy_sim.antenna_state import ANGLES, AntennaState
-from reachy_sim.cortex_loader import CortexLoader
+from reachy_sim.cortex_loader import CortexLoadError, CortexLoader
 from reachy_sim.decision_engine import DecisionEngine
 
 
@@ -205,7 +205,11 @@ def main(argv: list[str] | None = None) -> int:
         help="Path to a Cortex pack directory. The birth check runs before the demo.",
     )
     args = parser.parse_args(argv)
-    return run_demo(args.pack)
+    try:
+        return run_demo(args.pack)
+    except CortexLoadError as error:
+        print(error, file=sys.stderr)
+        return 1
 
 
 if __name__ == "__main__":

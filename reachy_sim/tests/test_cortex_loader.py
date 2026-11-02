@@ -2,6 +2,8 @@
 
 import hashlib
 import json
+import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -53,6 +55,23 @@ def test_loader_lists_skills_and_ranks_context(tmp_path: Path) -> None:
     assert loader.get_skill_context("rental license") == "Philadelphia rental license renewal.\n"
     assert "Tripod" in loader.get_skill_context("tripod gait")
     assert loader.get_skill_context("zzzz-unmatched") == ""
+
+
+def test_corrupted_checksum_exits_nonzero(tmp_path: Path) -> None:
+    pack = _good_pack(tmp_path)
+    skill = pack / "skills" / "walk" / "SKILL.md"
+    skill.write_text("Tampered gait text.\n", encoding="utf-8", newline="\n")
+    root = Path(__file__).resolve().parents[2]
+    completed = subprocess.run(
+        [sys.executable, "-m", "reachy_sim.sim_runner", "--pack", str(pack)],
+        cwd=root,
+        capture_output=True,
+        text=True,
+        timeout=30,
+        check=False,
+    )
+    assert completed.returncode != 0
+    assert "skills/walk/SKILL.md" in completed.stderr
 
 
 def test_birth_check_refuses_a_corrupted_file(tmp_path: Path) -> None:
