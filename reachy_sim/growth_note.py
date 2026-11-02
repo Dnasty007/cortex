@@ -39,6 +39,33 @@ def maybe_write_growth_note(pack: Path, loader: CortexLoader, utterance: str) ->
     return _write_pending(pack, text, _note_body(text, score))
 
 
+def write_work_note(
+    pack: Path,
+    utterance: str,
+    *,
+    ticket: str = "",
+    contractor: str = "",
+    photo: str = "",
+) -> Path | None:
+    """Record a Buildium result Hermes already handled.
+
+    The same utterance is still written once. This does not call Buildium.
+    """
+    text = utterance.strip()
+    if not text:
+        return None
+    lines = ["From: reachy-sim", f"Utterance: {text}"]
+    if ticket.strip():
+        lines.append(f"Ticket: {ticket.strip()}")
+    if contractor.strip():
+        lines.append(f"Contractor: {contractor.strip()}")
+    if photo.strip():
+        lines.append(f"Photo: {photo.strip()}")
+    if len(lines) == 2:
+        return None
+    return _write_pending(pack, text, "\n".join(lines) + "\n")
+
+
 def write_event_note(pack: Path, utterance: str, reason: str) -> Path | None:
     """Write one pending note for a Hermes timeout or error.
 

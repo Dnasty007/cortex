@@ -46,6 +46,7 @@ class CortexPanel:
         self.reply_line = ""
         self.target_line = ""
         self.ticket_line = ""
+        self.photo_line = ""
         self._lock = threading.Lock()
         self._thread: threading.Thread | None = None
 
@@ -63,6 +64,7 @@ class CortexPanel:
             self.reply_line = ""
             self.target_line = ""
             self.ticket_line = ""
+            self.photo_line = ""
             self.rtt_ms = float(rtt_ms)
             if matched_skill and choice in ("local", "grok_bot"):
                 self.matched = matched_skill
@@ -88,9 +90,17 @@ class CortexPanel:
             self.reply_line = f"reply: {reply}" if reply else ""
             self.target_line = f"target: {target}" if target else ""
             self.ticket_line = f"ticket: {ticket}" if ticket else ""
+            self.photo_line = ""
             self.decision_line = ""
             self.no_local = False
             self.matched = None
+        if self.console:
+            print(self.text())
+
+    def note_photo(self, filename: str) -> None:
+        """Show the frame just saved for this reply."""
+        with self._lock:
+            self.photo_line = f"photo: {filename}"
         if self.console:
             print(self.text())
 
@@ -140,6 +150,8 @@ class CortexPanel:
                 lines.append(self.target_line)
             if self.ticket_line:
                 lines.append(self.ticket_line)
+            if self.photo_line:
+                lines.append(self.photo_line)
             if self.decision_line:
                 lines.append(self.decision_line)
             if self.rtt_ms is not None:
@@ -250,6 +262,7 @@ class CortexPanel:
                     reply = self.reply_line
                     target = self.target_line
                     ticket = self.ticket_line
+                    photo = self.photo_line
                     rtt = None if self.rtt_ms is None else _rtt_text(self.rtt_ms)
                     pending_n = self.pending_notes
                     flash = self.growth_line if time.monotonic() < self.growth_until else ""
@@ -274,6 +287,8 @@ class CortexPanel:
                     rows.append(target)
                 if ticket:
                     rows.append(ticket)
+                if photo:
+                    rows.append(photo)
                 if decision:
                     rows.append(decision)
                 if rtt is not None:

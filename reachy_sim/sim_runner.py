@@ -26,7 +26,7 @@ from reachy_sim.attention import attention_targets, resolve_doa, shake_yaws
 from reachy_sim.cortex_loader import CortexLoadError, CortexLoader
 from reachy_sim.cortex_panel import CortexPanel
 from reachy_sim.decision_engine import DecisionEngine
-from reachy_sim.growth_note import maybe_write_growth_note, pending_count, write_event_note
+from reachy_sim.growth_note import maybe_write_growth_note, pending_count, write_event_note, write_work_note
 from reachy_sim.hermes_body import (
     HermesClient,
     HermesError,
@@ -36,6 +36,7 @@ from reachy_sim.hermes_body import (
     hermes_prompt,
     motion_for,
 )
+from reachy_sim.senses import capture_frame, read_utterances, speak, wants_photo
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -233,22 +234,43 @@ def live_routes(
     doa: float | None,
     rng: random.Random,
     client: HermesClient | None = None,
+    utterances: list[str] | None = None,
 ) -> list[dict]:
     """Ask Hermes once per non-empty utterance and return antenna poses.
 
     A missing Hermes connection keeps the local decision engine. That engine
     still reads only local_skill_match, network_rtt_ms, and ethernet_up.
-    Idle holds do not call this.
+    Idle holds do not call this. Blank heard lines are idle too.
     """
     if client is None:
         client = HermesClient(discover_connection(root=REPO_ROOT))
     client.warn_if_missing()
     routes: list[dict] = []
-    for sample in EXAMPLES:
+    for sample in _heard_samples(utterances):
         route = route_utterance(engine, loader, pack, panel, sample, client, doa, rng)
         if route is not None:
             routes.append(route)
     return routes
+
+
+def _heard_samples(utterances: list[str] | None) -> list[dict]:
+    """Demo lines, or the lines the mic just heard. Blank lines stay idle."""
+    if utterances is None:
+        return [dict(sample) for sample in EXAMPLES]
+    samples = []
+    for line in utterances:
+        text = line.strip()
+        if not text:
+            continue
+        samples.append(
+            {
+                "utterance": text,
+                "local_skill_match": False,
+                "network_rtt_ms": 20.0,
+                "ethernet_up": True,
+            }
+        )
+    return samples
 
 
 def route_utterance(
@@ -277,7 +299,7 @@ def route_utterance(
         print(f"Hermes error utterance={utterance!r} {error}", file=sys.stderr)
         _note_hermes_failure(pack, panel, utterance, "Hermes returned an error.")
         return _local_decision(engine, loader, pack, panel, sample, doa, rng)
-    return _hermes_decision(panel, answer, utterance, doa, rng)
+    return _hermes_decision(panel, answer, utterance, doa, rng, pack)
 
 
 def _local_decision(
@@ -328,19 +350,28 @@ def _hermes_decision(
     utterance: str,
     doa: float | None,
     rng: random.Random,
+    pack: Path,
 ) -> dict:
     """Move and speak only what Hermes returned.
 
     A delegate target is recorded here. This process does not call Grok Bot,
-    Claude, or the Buildium API.
+    Claude, or the Buildium API. Speech starts after Hermes has already replied.
     """
     motion = motion_for(answer.action)
-    print(answer.reply)
+    speak(answer.reply)
+    photo_rel = ""
+    if wants_photo(answer.action, answer.reply):
+        photo = capture_frame(pack)
+        photo_rel = f"photos/{photo.name}"
     if answer.ticket:
         print(f"ticket: {answer.ticket}")
     if answer.action == "delegate":
         print(f"delegate target={answer.target}")
     panel.note_hermes(answer.action, answer.reply, answer.target, answer.ticket, utterance)
+    if photo_rel:
+        panel.note_photo(photo_rel.split("/", 1)[1])
+    if photo_rel or (answer.action == "buildium" and answer.ticket and answer.target):
+        _note_work(pack, panel, utterance, answer.ticket, answer.target, photo_rel)
     return {
         "pose": motion["state"],
         "base": motion["angles"],
@@ -351,6 +382,27 @@ def _hermes_decision(
         "target": answer.target,
         "ticket": answer.ticket,
     }
+
+
+def _note_work(
+    pack: Path,
+    panel: CortexPanel,
+    utterance: str,
+    ticket: str,
+    contractor: str,
+    photo: str,
+) -> None:
+    written = write_work_note(
+        pack,
+        utterance,
+        ticket=ticket,
+        contractor=contractor,
+        photo=photo,
+    )
+    if written is None:
+        return
+    first = written.read_text(encoding="utf-8").splitlines()[0]
+    panel.note_growth(pending_count(pack), first)
 
 
 def _note_hermes_failure(pack: Path, panel: CortexPanel, utterance: str, reason: str) -> None:
@@ -461,7 +513,11 @@ def cycle_antennas(antennas: AntennaState, send) -> None:
             time.sleep(remaining)
 
 
-def run_demo(pack: Path | None, doa: float | None = None) -> int:
+def run_demo(
+    pack: Path | None,
+    doa: float | None = None,
+    utterances: list[str] | None = None,
+) -> int:
     engine = DecisionEngine()
     antennas = AntennaState()
     routes: list[dict] | None = None
@@ -487,6 +543,7 @@ def run_demo(pack: Path | None, doa: float | None = None) -> int:
             doa,
             random.Random(),
             HermesClient(discover_connection(root=REPO_ROOT)),
+            utterances,
         )
     else:
         print_decisions(engine)
@@ -537,12 +594,30 @@ def main(argv: list[str] | None = None) -> int:
         default=None,
         help="Speaker direction in degrees, from -180 to 180. 0 is straight ahead.",
     )
+    parser.add_argument(
+        "--hear",
+        default=None,
+        help="Utterance file, or - to read stdin. One line is one utterance. Blank lines are idle.",
+    )
     args = parser.parse_args(argv)
     if args.doa is not None and (args.doa < -180.0 or args.doa > 180.0):
         print("doa must be from -180 to 180 degrees.", file=sys.stderr)
         return 1
+    utterances = None
+    if args.hear is not None:
+        if args.pack is None:
+            print("hear needs a --pack.", file=sys.stderr)
+            return 1
+        if args.hear != "-" and not Path(args.hear).is_file():
+            print(f"hear file is missing: {args.hear}", file=sys.stderr)
+            return 1
+        try:
+            utterances = read_utterances(args.hear)
+        except OSError as error:
+            print(f"hear file could not be read: {error}", file=sys.stderr)
+            return 1
     try:
-        return run_demo(args.pack, args.doa)
+        return run_demo(args.pack, args.doa, utterances)
     except CortexLoadError as error:
         print(error, file=sys.stderr)
         return 1
