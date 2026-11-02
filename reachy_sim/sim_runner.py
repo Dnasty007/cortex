@@ -21,6 +21,7 @@ from pathlib import Path
 
 from reachy_sim.antenna_state import ANGLES, AntennaState
 from reachy_sim.cortex_loader import CortexLoadError, CortexLoader
+from reachy_sim.cortex_panel import CortexPanel
 from reachy_sim.decision_engine import DecisionEngine
 
 
@@ -209,7 +210,12 @@ def _skill_headers(pack: Path) -> list[dict[str, str]]:
     return headers
 
 
-def live_routes(engine: DecisionEngine, loader: CortexLoader, pack: Path) -> list[str]:
+def live_routes(
+    engine: DecisionEngine,
+    loader: CortexLoader,
+    pack: Path,
+    panel: CortexPanel,
+) -> list[dict]:
     """Ask the decision engine once per utterance and return antenna poses.
 
     Skill names and headers ride on the sample. The engine's routing rule is
@@ -218,39 +224,56 @@ def live_routes(engine: DecisionEngine, loader: CortexLoader, pack: Path) -> lis
     """
     skills = loader.list_loaded_skills()
     headers = _skill_headers(pack)
-    poses: list[str] = []
+    routes: list[dict] = []
     for sample in EXAMPLES:
+        utterance = str(sample["utterance"])
+        matched = loader.best_match(utterance)
         routed = dict(sample)
-        routed["local_skill_match"] = bool(loader.get_skill_context(sample["utterance"]).strip())
+        routed["local_skill_match"] = matched is not None
         routed["skills"] = list(skills)
         routed["headers"] = headers
         try:
             choice = engine.decide(routed)
         except Exception as error:
             print(
-                f"decision error utterance={sample['utterance']!r} {error}",
+                f"decision error utterance={utterance!r} {error}",
                 file=sys.stderr,
             )
             choice = "error"
-        print(f"decision {choice} utterance={sample['utterance']!r}")
-        poses.append(ROUTE_POSE.get(choice, "ERROR"))
-    return poses
+        print(f"decision {choice} utterance={utterance!r}")
+        panel.note_decision(choice, utterance, float(sample["network_rtt_ms"]), matched)
+        routes.append(
+            {
+                "pose": ROUTE_POSE.get(choice, "ERROR"),
+                "choice": choice,
+            }
+        )
+    return routes
 
 
-def _hold_pose(antennas: AntennaState, send, state: str, duration: float) -> None:
+def _hold_pose(
+    antennas: AntennaState,
+    send,
+    state: str,
+    duration: float,
+    panel: CortexPanel | None = None,
+) -> None:
     antennas.set_state(state)
     angles = antennas.get_target_angles()
     print(f"antenna {state} {angles[0]:.3f} {angles[1]:.3f}")
+    if panel is not None:
+        panel.set_antenna(state, angles)
     if send is not None:
         send(angles, duration)
 
 
-def play_routes(antennas: AntennaState, send, poses: list[str]) -> None:
+def play_routes(antennas: AntennaState, send, routes: list[dict], panel: CortexPanel) -> None:
     """Idle, then each decision pose, then idle again. Nothing is queued ahead."""
-    _hold_pose(antennas, send, "IDLE", 0.45)
-    for state in poses:
-        _hold_pose(antennas, send, state, 1.3)
-        _hold_pose(antennas, send, "IDLE", 0.45)
+    _hold_pose(antennas, send, "IDLE", 0.45, panel)
+    for route in routes:
+        panel.show_match()
+        _hold_pose(antennas, send, str(route["pose"]), 1.3, panel)
+        _hold_pose(antennas, send, "IDLE", 0.45, panel)
 
 
 def cycle_antennas(antennas: AntennaState, send) -> None:
@@ -273,13 +296,21 @@ def cycle_antennas(antennas: AntennaState, send) -> None:
 def run_demo(pack: Path | None) -> int:
     engine = DecisionEngine()
     antennas = AntennaState()
-    routes: list[str] | None = None
+    routes: list[dict] | None = None
+    panel: CortexPanel | None = None
     if pack is not None:
         loader = CortexLoader(pack)
         _require_pattern_sha256(pack)
         names = ", ".join(loader.list_loaded_skills()) or "(none)"
         print(f"loaded skills: {names}")
-        routes = live_routes(engine, loader, pack)
+        panel = CortexPanel(
+            loader.list_loaded_skills(),
+            console=mujoco_import_error() is not None,
+        )
+        if not panel.console:
+            panel.open_window()
+        panel.set_antenna("IDLE", antennas.get_target_angles())
+        routes = live_routes(engine, loader, pack, panel)
     else:
         print_decisions(engine)
     process = start_mujoco_daemon()
@@ -296,16 +327,16 @@ def run_demo(pack: Path | None) -> int:
                 def send(angles: tuple[float, float], duration: float) -> None:
                     robot.goto_target(antennas=list(angles), duration=duration)
 
-                if routes is None:
+                if routes is None or panel is None:
                     cycle_antennas(antennas, send)
                 else:
-                    play_routes(antennas, send, routes)
+                    play_routes(antennas, send, routes, panel)
         else:
             print("Antenna cycle is running without the MuJoCo window.")
-            if routes is None:
+            if routes is None or panel is None:
                 cycle_antennas(antennas, None)
             else:
-                play_routes(antennas, None, routes)
+                play_routes(antennas, None, routes, panel)
     finally:
         stop_process(process)
     return 0

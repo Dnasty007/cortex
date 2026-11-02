@@ -25,7 +25,9 @@ The three utterances are still `use the local tripod gait`, `walk while the shop
 
 Without `--pack`, the window still opens and the six demo poses play in order.
 
-Without the MuJoCo extra, the same command prints the decision lines and the antenna angles. It does not open a robot window. A pack that fails a sha256 check exits non-zero and names the mismatched file. A pack with no `pattern_sha256` exits non-zero and names `manifest.json`.
+With a pack, a Cortex panel sits beside the body. It lists up to 12 skill titles, a count when there are more, the last decision, the round-trip time used for that decision, and the antenna state next to the angles. The matched skill is gold for about a second. A `grok_bot` or `hermes` result with no local skill shows a dim `no local match` line.
+
+Without the MuJoCo extra, the same command prints those panel lines, the decision lines, and the antenna angles. It does not open a robot window. A pack that fails a sha256 check exits non-zero and names the mismatched file. A pack with no `pattern_sha256` exits non-zero and names `manifest.json`.
 
 ## Point the loader at a pack
 
@@ -35,7 +37,7 @@ Without the MuJoCo extra, the same command prints the decision lines and the ant
 python -c "from reachy_sim import CortexLoader; loader = CortexLoader(r'C:\path\to\pack'); print(loader.list_loaded_skills()); print(loader.get_skill_context('rental license'))"
 ```
 
-`list_loaded_skills()` returns the skill names. `get_skill_context(query)` concatenates the skill texts with the most keyword overlap.
+`list_loaded_skills()` returns the skill names. `get_skill_context(query)` concatenates the skill texts with the most keyword overlap. Overlap is computed on the skill title and description after dropping stop words: the, a, an, and, or, but, if, is, are, was, be, to, of, in, on, for, with, use, and local. A query with no content word left, or with no content word in common, does not match.
 
 ## Tests
 
