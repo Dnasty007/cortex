@@ -11,7 +11,9 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import os
+import random
 import re
 import socket
 import subprocess
@@ -20,6 +22,7 @@ import time
 from pathlib import Path
 
 from reachy_sim.antenna_state import ANGLES, AntennaState
+from reachy_sim.attention import attention_targets, resolve_doa, shake_yaws
 from reachy_sim.cortex_loader import CortexLoadError, CortexLoader
 from reachy_sim.cortex_panel import CortexPanel
 from reachy_sim.decision_engine import DecisionEngine
@@ -44,6 +47,8 @@ ROUTE_POSE = {
     "hermes": "HANDOFF",
 }
 _HEADER = re.compile(r":::cortex\n(.*?)\n:::", re.S)
+ATTEND_SECONDS = 1.2
+LEAN_SECONDS = 0.45
 
 EXAMPLES = (
     {
@@ -216,6 +221,8 @@ def live_routes(
     loader: CortexLoader,
     pack: Path,
     panel: CortexPanel,
+    doa: float | None,
+    rng: random.Random,
 ) -> list[dict]:
     """Ask the decision engine once per utterance and return antenna poses.
 
@@ -251,9 +258,57 @@ def live_routes(
             {
                 "pose": ROUTE_POSE.get(choice, "ERROR"),
                 "choice": choice,
+                "doa": resolve_doa(doa, rng),
             }
         )
     return routes
+
+
+def _command(
+    antennas: AntennaState,
+    send,
+    state: str,
+    angles: tuple[float, float],
+    yaw: float,
+    duration: float,
+    panel: CortexPanel | None = None,
+) -> None:
+    antennas.set_state(state)
+    print(
+        f"antenna {state} {angles[0]:.3f} {angles[1]:.3f} "
+        f"head {math.degrees(yaw):.1f}"
+    )
+    if panel is not None:
+        panel.set_antenna(state, angles)
+    if send is not None and duration > 0:
+        send(angles, duration, yaw)
+
+
+def _look_toward(
+    antennas: AntennaState,
+    send,
+    panel: CortexPanel,
+    pose: str,
+    doa_deg: float,
+    choice: str,
+) -> None:
+    """Lean toward the speaker, then return to idle. An error shakes once."""
+    panel.set_doa(doa_deg)
+    if choice == "error":
+        antennas.set_state("ERROR")
+        angles = antennas.get_target_angles()
+        for yaw in shake_yaws():
+            _command(antennas, send, "ERROR", angles, yaw, 0.3, panel)
+        _command(antennas, send, "IDLE", ANGLES["IDLE"], 0.0, 0.3, panel)
+        return
+    antennas.set_state(pose)
+    yaw, leaned = attention_targets(doa_deg, antennas.get_target_angles())
+    _command(antennas, send, pose, leaned, yaw, LEAN_SECONDS, panel)
+    if send is not None:
+        remaining = ATTEND_SECONDS - LEAN_SECONDS
+        if remaining > 0:
+            time.sleep(remaining)
+    _command(antennas, send, "IDLE", ANGLES["IDLE"], 0.0, 0.4, panel)
 
 
 def _hold_pose(
@@ -265,20 +320,22 @@ def _hold_pose(
 ) -> None:
     antennas.set_state(state)
     angles = antennas.get_target_angles()
-    print(f"antenna {state} {angles[0]:.3f} {angles[1]:.3f}")
-    if panel is not None:
-        panel.set_antenna(state, angles)
-    if send is not None:
-        send(angles, duration)
+    _command(antennas, send, state, angles, 0.0, duration, panel)
 
 
 def play_routes(antennas: AntennaState, send, routes: list[dict], panel: CortexPanel) -> None:
-    """Idle, then each decision pose, then idle again. Nothing is queued ahead."""
+    """Idle, then each decision looks toward its speaker and returns to idle."""
     _hold_pose(antennas, send, "IDLE", 0.45, panel)
     for route in routes:
         panel.show_match()
-        _hold_pose(antennas, send, str(route["pose"]), 1.3, panel)
-        _hold_pose(antennas, send, "IDLE", 0.45, panel)
+        _look_toward(
+            antennas,
+            send,
+            panel,
+            str(route["pose"]),
+            float(route["doa"]),
+            str(route["choice"]),
+        )
 
 
 def cycle_antennas(antennas: AntennaState, send) -> None:
@@ -298,7 +355,7 @@ def cycle_antennas(antennas: AntennaState, send) -> None:
             time.sleep(remaining)
 
 
-def run_demo(pack: Path | None) -> int:
+def run_demo(pack: Path | None, doa: float | None = None) -> int:
     engine = DecisionEngine()
     antennas = AntennaState()
     routes: list[dict] | None = None
@@ -316,7 +373,7 @@ def run_demo(pack: Path | None) -> int:
             panel.open_window()
         panel.set_pending(pending_count(pack))
         panel.set_antenna("IDLE", antennas.get_target_angles())
-        routes = live_routes(engine, loader, pack, panel)
+        routes = live_routes(engine, loader, pack, panel, doa, random.Random())
     else:
         print_decisions(engine)
     process = start_mujoco_daemon()
@@ -330,8 +387,12 @@ def run_demo(pack: Path | None) -> int:
             ) as robot:
                 print("MuJoCo simulation is up. The robot window should be visible.")
 
-                def send(angles: tuple[float, float], duration: float) -> None:
-                    robot.goto_target(antennas=list(angles), duration=duration)
+                def send(angles: tuple[float, float], duration: float, yaw: float = 0.0) -> None:
+                    robot.goto_target(
+                        antennas=list(angles),
+                        duration=duration,
+                        body_yaw=yaw,
+                    )
 
                 if routes is None or panel is None:
                     cycle_antennas(antennas, send)
@@ -356,9 +417,18 @@ def main(argv: list[str] | None = None) -> int:
         default=None,
         help="Path to a Cortex pack directory. The birth check runs before the demo.",
     )
+    parser.add_argument(
+        "--doa",
+        type=float,
+        default=None,
+        help="Speaker direction in degrees, from -180 to 180. 0 is straight ahead.",
+    )
     args = parser.parse_args(argv)
+    if args.doa is not None and (args.doa < -180.0 or args.doa > 180.0):
+        print("doa must be from -180 to 180 degrees.", file=sys.stderr)
+        return 1
     try:
-        return run_demo(args.pack)
+        return run_demo(args.pack, args.doa)
     except CortexLoadError as error:
         print(error, file=sys.stderr)
         return 1

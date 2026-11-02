@@ -40,6 +40,7 @@ class CortexPanel:
         self.pending_notes = 0
         self.growth_line = ""
         self.growth_until = 0.0
+        self.doa_deg: float | None = None
         self._lock = threading.Lock()
         self._thread: threading.Thread | None = None
 
@@ -83,6 +84,10 @@ class CortexPanel:
             if self.matched:
                 self.highlight_until = time.monotonic() + HIGHLIGHT_SECONDS
 
+    def set_doa(self, degrees: float) -> None:
+        with self._lock:
+            self.doa_deg = float(degrees)
+
     def set_antenna(self, state: str, angles: tuple[float, float]) -> None:
         with self._lock:
             self.antenna_state = ANTENNA_LABEL.get(state, state.lower())
@@ -97,9 +102,7 @@ class CortexPanel:
             lines = [f"{len(self.skills)} skills loaded", *shown]
             if self.no_local:
                 lines.append("no local match")
-            lines.append(
-                f"{self.antenna_state}  {self.angles[0]:.3f}  {self.angles[1]:.3f}"
-            )
+            lines.append(_antenna_line(self.antenna_state, self.angles, self.doa_deg))
             if self.decision_line:
                 lines.append(self.decision_line)
             if self.rtt_ms is not None:
@@ -209,6 +212,7 @@ class CortexPanel:
                     rtt = None if self.rtt_ms is None else _rtt_text(self.rtt_ms)
                     pending_n = self.pending_notes
                     flash = self.growth_line if time.monotonic() < self.growth_until else ""
+                    doa = self.doa_deg
                 count.configure(text=f"{total} skills loaded")
                 for index, label in enumerate(skill_labels):
                     if index < len(skills):
@@ -220,7 +224,7 @@ class CortexPanel:
                     else:
                         label.configure(text="")
                 nomatch.configure(text="no local match" if quiet else "")
-                rows = [f"{antenna}  {angles[0]:.3f}  {angles[1]:.3f}"]
+                rows = [_antenna_line(antenna, angles, doa)]
                 if decision:
                     rows.append(decision)
                 if rtt is not None:
@@ -241,6 +245,14 @@ class CortexPanel:
         ready.wait(timeout=5)
         if error:
             raise error[0]
+
+
+def _antenna_line(state: str, angles: tuple[float, float], doa: float | None) -> str:
+    line = f"{state}  {angles[0]:.3f}  {angles[1]:.3f}"
+    if doa is not None:
+        shown = str(int(doa)) if float(doa).is_integer() else f"{doa:.0f}"
+        line += f"  doa {shown}°"
+    return line
 
 
 def _rtt_text(value: float) -> str:
