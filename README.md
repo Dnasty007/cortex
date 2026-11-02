@@ -32,7 +32,7 @@ Cortex is for teams running agents across Claude, Grok, Kimi, and others who nee
 
 `cortex-spec-1` is frozen at tag `cortex-spec-1` on main. It survived cold reads from Claude, Grok, Hermes, and Kimi K2 — twenty-two gaps found and resolved across multiple rounds. The open-questions section lists the remaining known limitations honestly rather than hiding them.
 
-The canonical document is [CORTEX-SPEC.md](CORTEX-SPEC.md). `scanner/pack_brain.py` is the sealed builder and installer. `cortex_pack.py` is the portable builder. [scripts/brain-query.mjs](scripts/brain-query.mjs) lists paths and headers from a brain without printing file bodies. A sealed pack also writes that script at the brain root. The tests include [scanner/pack_brain_test.py](scanner/pack_brain_test.py). The Windows desktop app is a separate surface: a Three.js view of a brain for people who want to see it. `npm install` then `npm run dev` opens it at http://localhost:5173.
+The canonical document is [CORTEX-SPEC.md](CORTEX-SPEC.md). `scanner/pack_brain.py` is the sealed builder and installer. `cortex_pack.py` is the portable builder. [scripts/brain-query.mjs](scripts/brain-query.mjs) lists paths and headers from a brain without printing file bodies. A sealed pack also writes that script at the brain root. The tests include [scanner/pack_brain_test.py](scanner/pack_brain_test.py).
 
 Contributions and issues go through the spec first. The format is the contract, and code follows it.
 
