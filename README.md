@@ -36,4 +36,4 @@ The canonical document is [CORTEX-SPEC.md](CORTEX-SPEC.md). `scanner/pack_brain.
 
 Contributions and issues go through the spec first. The format is the contract, and code follows it.
 
-Copyright Ray. All rights reserved. See [LICENSE](LICENSE).
+MIT License. Copyright (c) 2026 Ray. See [LICENSE](LICENSE).
