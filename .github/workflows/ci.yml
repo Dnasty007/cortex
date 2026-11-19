@@ -31,3 +31,6 @@ jobs:
 
       - name: check brain-query.mjs parses
         run: node --check scripts/brain-query.mjs
+
+      - name: check the avatar manifest
+        run: node scripts/cortex-manifest.mjs --check scripts/fixtures/tiny-rig.manifest.json --glb scripts/fixtures/tiny-rig.glb
